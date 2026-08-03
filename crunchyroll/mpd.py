@@ -4,12 +4,12 @@ from .http_client import CrunchyrollHttpClient
 
 
 def _clean_tag(tag: str) -> str:
-    """Strips XML namespace prefixes from a tag string."""
+    """strip xml namespace prefix"""
     return tag.split("}")[-1] if "}" in tag else tag
 
 
 def parse_manifest(client: CrunchyrollHttpClient, url: str, debug: bool = False) -> ET.Element:
-    """Fetches and parses a DASH MPD manifest XML into an ElementTree Element."""
+    """fetch and parse dash mpd manifest"""
     resp = client.do_request("GET", url)
     resp.raise_for_status()
 
@@ -22,12 +22,12 @@ def parse_manifest(client: CrunchyrollHttpClient, url: str, debug: bool = False)
 
 
 def get_pssh(manifest: ET.Element) -> Optional[str]:
-    """Extracts the CENC PSSH string from the first AdaptationSet in the MPD manifest."""
+    """dig out the cenc pssh string from the manifest"""
     for elem in manifest.iter():
         if _clean_tag(elem.tag) == "AdaptationSet":
             for cp in elem:
                 if _clean_tag(cp.tag) == "ContentProtection":
-                    # Check attributes or child elements for pssh
+                    # check for pssh
                     for key, val in cp.attrib.items():
                         if "pssh" in key.lower():
                             return val
@@ -40,10 +40,7 @@ def get_pssh(manifest: ET.Element) -> Optional[str]:
 def get_base_url(
     adaptation_set: ET.Element, is_video_set: bool, quality: str
 ) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Finds the matching BaseURL and Representation ID in an AdaptationSet
-    for a target quality string (e.g., '1080p' for video, '192k' for audio).
-    """
+    """find base url and representation id for target quality"""
     reps = [e for e in adaptation_set if _clean_tag(e.tag) == "Representation"]
 
     for rep in reps:
@@ -51,7 +48,7 @@ def get_base_url(
         height = rep.attrib.get("height")
         bandwidth = rep.attrib.get("bandwidth")
 
-        # Find BaseURL child element or adaptation set BaseURL
+        # look for baseurl
         base_url_elem = None
         for child in rep:
             if _clean_tag(child.tag) == "BaseURL":
@@ -102,10 +99,7 @@ def get_base_url(
 def expand_timeline(
     adaptation_set: ET.Element, start_number: int = 1
 ) -> List[int]:
-    """
-    Finds all SegmentTimeline <S> elements recursively inside an AdaptationSet
-    and expands them into a complete list of segment numbers.
-    """
+    """expand segment timelines into a list of numbers"""
     s_elements = []
     for elem in adaptation_set.iter():
         if _clean_tag(elem.tag) == "S":

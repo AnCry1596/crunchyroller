@@ -12,24 +12,21 @@ def merge_everything(
     output_file: str,
     info: EpisodeInfo,
 ) -> None:
-    """
-    Merges video file, audio tracks, and subtitle tracks into a single MKV container
-    using FFmpeg, setting language tags, track titles, dispositions, and global metadata.
-    """
+    """mux everything into a single mkv"""
     args = ["ffmpeg", "-y", "-i", video_file]
     for audio in audio_tracks:
         args.extend(["-i", audio.file])
     for sub in sub_tracks:
         args.extend(["-i", sub.file])
 
-    # Map video stream
+    # map video
     args.extend(["-map", "0:v:0"])
 
-    # Map audio streams
+    # map audio
     for i in range(len(audio_tracks)):
         args.extend(["-map", f"{1 + i}:a:0"])
 
-    # Map subtitle streams
+    # map subs
     for j in range(len(sub_tracks)):
         args.extend(["-map", f"{1 + len(audio_tracks) + j}"])
 
@@ -37,7 +34,7 @@ def merge_everything(
     if sub_tracks:
         args.extend(["-c:s", "copy"])
 
-    # Audio metadata
+    # audio metadata
     for i, audio in enumerate(audio_tracks):
         lang_code = LANGUAGE_CODES.get(audio.locale, audio.locale)
         title = track_title(audio.locale)
@@ -46,7 +43,7 @@ def merge_everything(
             f"-metadata:s:a:{i}", f"title={title}",
         ])
 
-    # Subtitle metadata
+    # sub metadata
     for j, sub in enumerate(sub_tracks):
         lang_code = LANGUAGE_CODES.get(sub.locale, sub.locale)
         title = track_title(sub.locale)
@@ -55,7 +52,7 @@ def merge_everything(
             f"-metadata:s:s:{j}", f"title={title}",
         ])
 
-    # Dispositions
+    # track dispositions
     for i in range(len(audio_tracks)):
         disposition = "default" if i == 0 else "0"
         args.extend([f"-disposition:a:{i}", disposition])
@@ -64,7 +61,7 @@ def merge_everything(
         disposition = "default" if j == 0 else "0"
         args.extend([f"-disposition:s:{j}", disposition])
 
-    # Global metadata
+    # global metadata
     meta_title = (
         f"S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d} - {info.title}"
     )
@@ -85,7 +82,7 @@ def merge_everything(
                 pass
         raise RuntimeError(f"ffmpeg failed: {result.stderr}")
 
-    # Remove temporary files
+    # cleanup temp files
     if os.path.exists(video_file):
         try:
             os.remove(video_file)

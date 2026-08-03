@@ -15,9 +15,7 @@ from .types import (
 
 
 def parse_url_type(url: str) -> Tuple[str, str]:
-    """
-    Parses Crunchyroll URL returning ('episode'|'season'|'series', content_id).
-    """
+    """figure out if the url is an episode, season, or series"""
     clean_url = url.split("?")[0].split("#")[0]
     parts = [p for p in clean_url.split("/") if p]
 
@@ -45,7 +43,7 @@ def parse_url_type(url: str) -> Tuple[str, str]:
 def get_episode(
     client: CrunchyrollHttpClient, content_id: str, debug: bool = False
 ) -> PlaybackStream:
-    """Retrieves playback streams and Widevine video token for a specific episode content ID."""
+    """grab the stream url and widevine token for an episode"""
     url = f"https://www.crunchyroll.com/playback/v3/{content_id}/web/firefox/play"
     resp = client.do_request("GET", url)
     resp.raise_for_status()
@@ -80,7 +78,7 @@ def get_episode(
 def get_episode_info(
     client: CrunchyrollHttpClient, content_id: str
 ) -> EpisodeInfo:
-    """Retrieves metadata (title, series, season, episode, dub versions) for an episode."""
+    """get metadata (title, dubs, etc) for an episode"""
     url = f"https://www.crunchyroll.com/content/v2/cms/objects/{content_id}"
     resp = client.do_request("GET", url)
     resp.raise_for_status()
@@ -125,7 +123,7 @@ def get_seasons(
     audio_locale: str = "ja-JP",
     sub_locale: str = "en-US",
 ) -> List[Season]:
-    """Retrieves list of seasons for a series ID."""
+    """list seasons for a series"""
     url = (
         f"https://www.crunchyroll.com/content/v2/cms/series/{series_id}/seasons"
         f"?preferred_audio_language={audio_locale}&locale={sub_locale}"
@@ -156,7 +154,7 @@ def get_season_episodes(
     audio_locale: str = "ja-JP",
     sub_locale: str = "en-US",
 ) -> List[SeasonEpisode]:
-    """Retrieves list of episodes for a season ID."""
+    """list all episodes in a season"""
     url = (
         f"https://www.crunchyroll.com/content/v2/cms/seasons/{season_id}/episodes"
         f"?preferred_audio_language={audio_locale}&locale={sub_locale}"
@@ -228,9 +226,7 @@ def get_series(
     audio_locale: str = "ja-JP",
     sub_locale: str = "en-US",
 ) -> Dict[str, Any]:
-    """
-    Parses series metadata, fetches all seasons via get_seasons, and all episodes across all seasons.
-    """
+    """fetch series metadata, seasons, and episodes in one go"""
     url = (
         f"https://www.crunchyroll.com/content/v2/cms/series/{series_id}"
         f"?preferred_audio_language={audio_locale}&locale={sub_locale}"
@@ -262,7 +258,7 @@ def get_series(
 def delete_stream(
     client: CrunchyrollHttpClient, content_id: str, video_token: str
 ) -> bool:
-    """Notifies Crunchyroll server to delete active playback stream session."""
+    """tell crunchyroll we're done watching so they don't get mad"""
     url = f"https://www.crunchyroll.com/playback/v3/{content_id}/delete"
     headers = {"X-Cr-Video-Token": video_token}
     resp = client.do_request("DELETE", url, headers=headers)

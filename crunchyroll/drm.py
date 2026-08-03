@@ -9,7 +9,7 @@ from .http_client import CrunchyrollHttpClient
 
 
 def get_widevine_device() -> Optional[Device]:
-    """Finds and loads a Widevine Device (.wvd file or client_id.bin + private_key.pem)."""
+    """hunt for a widevine device (.wvd or bin+pem)"""
     wvd_files = glob.glob("*.wvd")
     if wvd_files:
         return Device.load(wvd_files[0])
@@ -20,12 +20,13 @@ def get_widevine_device() -> Optional[Device]:
         with open("private_key.pem", "rb") as f:
             private_key = f.read()
         return Device(
-            type_=DeviceTypes.ANDROID,
+            type_=DeviceTypes.CHROME,
             security_level=3,
             flags=None,
             private_key=private_key,
             client_id=client_id,
         )
+
 
     return None
 
@@ -33,17 +34,21 @@ def get_widevine_device() -> Optional[Device]:
 def send_challenge(
     client: CrunchyrollHttpClient, content_id: str, video_token: str, challenge: bytes
 ) -> bytes:
-    """Sends Widevine license challenge to Crunchyroll and returns raw license bytes."""
+    """send the cdm challenge and get back the license"""
+    import requests as _requests
+
     url = "https://www.crunchyroll.com/license/v1/license/widevine"
     headers = {
         "Content-Type": "application/octet-stream",
         "X-Cr-Content-Id": content_id,
         "X-Cr-Video-Token": video_token,
+        "Authorization": f"Bearer {client.token}",
         "Origin": "https://static.crunchyroll.com",
         "Referer": "https://static.crunchyroll.com/",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
     }
 
-    resp = client.do_request("POST", url, headers=headers, data=challenge)
+    resp = _requests.post(url, headers=headers, data=challenge)
     resp.raise_for_status()
 
     result = resp.json()
@@ -54,13 +59,12 @@ def send_challenge(
     return base64.b64decode(license_b64)
 
 
+
+
 def get_license(
     client: CrunchyrollHttpClient, pssh_data: str, content_id: str, video_token: str
 ) -> Dict[bytes, bytes]:
-    """
-    Executes Widevine CDM challenge-response exchange to obtain media decryption keys.
-    Returns a dictionary mapping Key ID (16 bytes) -> Key (16 bytes).
-    """
+    """do the widevine handshake and extract the decryption keys"""
     device = get_widevine_device()
     if device is None:
         raise RuntimeError(
@@ -87,7 +91,7 @@ def get_license(
                 keys[kid_bytes] = key_bytes
 
         if not keys:
-            # Fallback: take all keys if type filtering was strict
+            # whatever, just grab all the keys
             for k in cdm.get_keys(session_id):
                 kid_bytes = k.kid.bytes if hasattr(k.kid, "bytes") else (k.kid if isinstance(k.kid, bytes) else bytes.fromhex(str(k.kid).replace("-", "")))
                 key_bytes = k.key if isinstance(k.key, bytes) else bytes.fromhex(str(k.key))

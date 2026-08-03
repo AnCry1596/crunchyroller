@@ -1,6 +1,4 @@
-"""
-Crunchyroll Downloader Python Package
-"""
+"""crunchyroll downloader logic"""
 
 from .downloader import download_episode, download_season
 from .merger import merge_everything

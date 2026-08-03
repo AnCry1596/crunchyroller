@@ -31,14 +31,14 @@ BACKOFF_FACTOR = 1.5
 
 
 def _clean_tag(tag: str) -> str:
-    """Strips XML namespace prefix from tag string."""
+    """strip xml namespace prefix"""
     return tag.split("}")[-1] if "}" in tag else tag
 
 
 def build_url(
     base_url: str, representation_id: str, pattern: str, number: Optional[int] = None
 ) -> str:
-    """Constructs segment download URL replacing $Number%05d$, $Number$, and $RepresentationID$ matching Go implementation."""
+    """build the segment url like the go version does"""
     res = pattern
     if number is not None:
         formatted_num = f"{number:05d}"
@@ -49,7 +49,7 @@ def build_url(
 
 
 def download_part(url: str, max_retries: int = MAX_RETRIES) -> bytes:
-    """Downloads a single media segment with retry exponential backoff matching Go implementation."""
+    """grab a segment. retry if cr gets mad."""
     headers = {
         "Origin": "https://static.crunchyroll.com",
         "Referer": "https://static.crunchyroll.com/",
@@ -80,10 +80,7 @@ def download_part(url: str, max_retries: int = MAX_RETRIES) -> bytes:
 
 
 def decrypt_mp4(parts: bytes, keys: Dict[bytes, bytes], output_filename: str) -> None:
-    """
-    Decrypts CENC-encrypted MP4 (fMP4) bytes using FFmpeg's native CENC demuxer (-decryption_key).
-    Provides 100% compliant, zero-error, fast hardware-optimized video and audio stream decryption.
-    """
+    """decrypt mp4 parts with ffmpeg cenc demuxer"""
     if not keys or (b"encv" not in parts and b"enca" not in parts):
         with open(output_filename, "wb") as f:
             f.write(parts)
@@ -117,7 +114,7 @@ def decrypt_mp4(parts: bytes, keys: Dict[bytes, bytes], output_filename: str) ->
     if res.returncode == 0 and os.path.exists(output_filename) and os.path.getsize(output_filename) > 0:
         return
 
-    # Fallback to manual decrypt_mp4 if FFmpeg command failed
+    # fallback to manual decryption if ffmpeg chokes
     print("Fallback to Python decrypt_mp4...")
     buf = bytearray(parts)
 
@@ -312,7 +309,7 @@ def download_parts(
     ep_title: str = "",
     progress_cb=None,
 ) -> str:
-    """Downloads all segments of a track concurrently and decrypts them into a temp MP4 file."""
+    """download all track segments at once and decrypt to a temp file"""
     seg_template = None
     for child in adaptation_set:
         if _clean_tag(child.tag) == "SegmentTemplate":
@@ -380,7 +377,7 @@ def download_parts(
 
 
 def download_subs(url: str) -> str:
-    """Downloads subtitle track file and returns local temp filepath."""
+    """grab subs and stash in a temp file"""
     content = requests.get(url).content
     tmp_file = tempfile.NamedTemporaryFile(suffix=".ass", delete=False)
     tmp_path = tmp_file.name
@@ -400,7 +397,7 @@ def download_episode(
     debug: bool = False,
     progress_cb=None,
 ) -> None:
-    """Downloads video, audio, and subtitle streams for a single episode and multiplexes to MKV."""
+    """download all streams for an episode and mux to mkv"""
     versions: List[DubVersion] = []
     for loc in audio_langs:
         for version in info.episode_metadata.versions:
@@ -472,16 +469,19 @@ def download_episode(
 
         for i, version in enumerate(versions):
             ep = first_episode
+            content_id = base_content_id  # use base episode id for the first run
             if i > 0:
-                ep = get_episode(client, version.guid, debug=debug)
-                active_streams[version.guid] = ep.token
+                content_id = version.guid
+                ep = get_episode(client, content_id, debug=debug)
+                active_streams[content_id] = ep.token
 
             manifest = parse_manifest(client, ep.manifest_url, debug=debug)
             pssh = get_pssh(manifest)
             if not pssh:
                 raise RuntimeError("PSSH not found in MPD manifest")
 
-            keys = get_license(client, pssh, version.guid, ep.token)
+            keys = get_license(client, pssh, content_id, ep.token)
+
 
             periods = [e for e in manifest if _clean_tag(e.tag) == "Period"]
             period = periods[0] if periods else manifest
@@ -557,7 +557,7 @@ def download_season(
     debug: bool = False,
     progress_cb=None,
 ) -> None:
-    """Downloads all episodes in a season."""
+    """download an entire season"""
     print(f"Found {len(episodes)} episodes in this season!\n")
     for i, ep in enumerate(episodes):
         print(f"=== [{i+1}/{len(episodes)}] {ep.title} ===")
@@ -593,19 +593,22 @@ def download_series(
     subs_langs: List[str],
     video_quality: str,
     audio_quality: str,
+    season_filter: int = 0,
     progress_cb=None,
     debug: bool = False,
 ) -> None:
-    """Downloads all seasons and episodes for an entire anime series."""
+    """grab everything for a series"""
     primary_audio = audio_langs[0] if audio_langs else "ja-JP"
     primary_subs = subs_langs[0] if subs_langs else "en-US"
 
     series_data = get_series(client, series_id, primary_audio, primary_subs)
     episodes = series_data.get("episodes", [])
 
-    if not episodes:
-        print(f"No episodes found for series {series_id}.")
-        return
+    if season_filter > 0:
+        episodes = [ep for ep in episodes if ep.season_number == season_filter]
+        if not episodes:
+            print(f"No episodes found for season {season_filter}.")
+            return
 
     print(
         f"Downloading series '{series_data.get('title', series_id)}' "

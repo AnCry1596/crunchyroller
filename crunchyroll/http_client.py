@@ -16,13 +16,13 @@ class CrunchyrollHttpClient:
         self.password = password
         self.token = ""
 
-        # Load etp_rt from config.json if not provided
+        # try to load etp_rt from config
         if not self.etp_rt:
             cfg = load_config()
             if "etp_rt" in cfg and cfg["etp_rt"]:
                 self.etp_rt = cfg["etp_rt"]
 
-        # If etp_rt is still missing and credentials provided, authenticate
+        # still no etp_rt? try grabbing it with creds (good luck)
         if not self.etp_rt and self.username and self.password:
             acc_tok, ref_tok = login_with_credentials(self.username, self.password)
             self.etp_rt = ref_tok

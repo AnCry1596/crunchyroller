@@ -60,18 +60,18 @@ LANGUAGE_CODES = {
 
 
 def track_title(locale: str) -> str:
-    """Returns a human-readable track name for a locale."""
+    """get the language name from the locale code"""
     return LANGUAGE_NAMES.get(locale, locale)
 
 
 def sanitize_filename(s: str) -> str:
-    """Sanitizes a string for safe filesystem usage across Windows, Linux, and macOS."""
+    """clean up string so the OS doesn't complain about bad characters"""
     if not s:
         return "Unknown"
 
-    # Replace forbidden OS characters with underscore
+    # swap illegal chars with underscores
     res = re.sub(r'[\\/:*?"<>|\'"`“”’]', "_", s)
-    # Collapse multiple consecutive underscores
+    # shrink multiple underscores into one
     res = re.sub(r"_{2,}", "_", res)
 
     return res.strip(" ._") or "Unknown"

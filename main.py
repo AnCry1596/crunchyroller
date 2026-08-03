@@ -3,7 +3,7 @@ import sys
 import os
 from typing import List
 
-# Force UTF-8 stdout/stderr encoding on Windows consoles
+# force utf-8 on windows
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -15,14 +15,14 @@ from crunchyroll.http_client import CrunchyrollHttpClient
 
 
 def parse_langs(s: str) -> List[str]:
-    """Splits comma-separated locale string into a list of trimmed non-empty strings."""
+    """split comma-separated locales"""
     if not s:
         return []
     return [p.strip() for p in s.split(",") if p.strip()]
 
 
 def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespace) -> None:
-    """Processes a single Crunchyroll watch, season, or series URL."""
+    """handle a single url (episode, season, or series)"""
     try:
         content_type, content_id = parse_url_type(url)
     except ValueError as e:
@@ -60,6 +60,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             subs_langs,
             video_quality,
             audio_quality,
+            season_filter=args.season or 0,
             debug=args.debug_manifest,
         )
     elif content_type == "season":
@@ -120,7 +121,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Launch GUI if requested or if no URL/etp-rt arguments provided
+    # launch gui if asked or if we have no inputs
     if args.gui or len(sys.argv) == 1 or (not args.url and not args.file and not args.etp_rt and not args.email):
         from web_gui import start_server
         start_server(port=8000, open_browser=True)

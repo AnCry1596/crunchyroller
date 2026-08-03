@@ -6,31 +6,25 @@ import requests
 
 CONFIG_FILE = "config.json"
 
-
-def generate_device_id() -> str:
-    """Generates a random UUID4 device ID string."""
-    return str(uuid.uuid4())
+# just need one device id per session
+_DEVICE_ID = str(uuid.uuid4())
 
 
 def get_access_token(etp_rt: str) -> str:
-    """
-    Exchanges an etp_rt refresh token for a bearer access token.
-    Uses Crunchyroll's standard web client ID matching the Go implementation.
-    """
+    """swap our session cookie for a bearer token"""
     url = "https://www.crunchyroll.com/auth/v1/token"
-    dev_id = generate_device_id()
     headers = {
         "Authorization": "Basic bm9haWhkZXZtXzZpeWcwYThsMHE6",
         "Content-Type": "application/x-www-form-urlencoded",
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
     }
     cookies = {
-        "device_id": dev_id,
+        "device_id": _DEVICE_ID,
         "etp_rt": etp_rt,
     }
     data = {
         "grant_type": "etp_rt_cookie",
-        "device_id": dev_id,
+        "device_id": _DEVICE_ID,
         "device_type": "Firefox on Linux",
     }
 
@@ -45,10 +39,7 @@ def get_access_token(etp_rt: str) -> str:
 
 
 def auto_detect_etp_rt() -> Optional[str]:
-    """
-    Automatically detects and extracts Crunchyroll etp_rt cookie from installed browsers
-    (Chrome, Edge, Firefox, Brave, Opera) on Windows/Linux/Mac.
-    """
+    """try to grab the etp_rt cookie from whatever browser is installed"""
     import glob
     import sqlite3
     import shutil
@@ -58,7 +49,7 @@ def auto_detect_etp_rt() -> Optional[str]:
     from ctypes import wintypes
     from Crypto.Cipher import AES
 
-    # 1. Check Firefox
+    # firefox
     ff_paths = [
         os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Mozilla", "Firefox", "Profiles", "*", "cookies.sqlite"),
         os.path.join(os.path.expanduser("~"), ".mozilla", "firefox", "*", "cookies.sqlite"),
@@ -79,7 +70,7 @@ def auto_detect_etp_rt() -> Optional[str]:
             except Exception:
                 pass
 
-    # 2. Check Chromium browsers (Chrome, Edge, Brave, Opera)
+    # chromium browsers
     if os.name == "nt":
         class DATA_BLOB(ctypes.Structure):
             _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
@@ -121,7 +112,7 @@ def auto_detect_etp_rt() -> Optional[str]:
                 return True
             except Exception:
                 pass
-            # Try raw Win32 read with FILE_SHARE_READ|FILE_SHARE_WRITE
+            # try raw win32 read if file is locked
             try:
                 GENERIC_READ = 0x80000000
                 FILE_SHARE_READ = 0x00000001
@@ -187,10 +178,7 @@ def auto_detect_etp_rt() -> Optional[str]:
 
 
 def login_with_credentials(username: str, password: str, device_id_val: Optional[str] = None) -> Tuple[str, str]:
-    """
-    Crunchyroll has disabled legacy password-grant API authentication.
-    Guides user to provide their etp_rt session cookie or auto-detect it.
-    """
+    """legacy password login is dead. just try to grab the cookie."""
     token = auto_detect_etp_rt()
     if token:
         return "", token
@@ -209,7 +197,7 @@ def login_with_credentials(username: str, password: str, device_id_val: Optional
 
 
 def load_config(config_path: str = CONFIG_FILE) -> Dict[str, Any]:
-    """Loads settings from config.json if present."""
+    """load config if it exists"""
     if os.path.exists(config_path):
         try:
             with open(config_path, "r", encoding="utf-8") as f:
@@ -220,7 +208,7 @@ def load_config(config_path: str = CONFIG_FILE) -> Dict[str, Any]:
 
 
 def save_config(config_dict: Dict[str, Any], config_path: str = CONFIG_FILE) -> None:
-    """Saves etp_rt, username, video_quality, audio_quality to config.json."""
+    """save settings"""
     existing = load_config(config_path)
     existing.update(config_dict)
     with open(config_path, "w", encoding="utf-8") as f:

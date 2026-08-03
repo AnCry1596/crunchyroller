@@ -1,907 +1,567 @@
 import http.server
 import json
 import os
-import sys
 import threading
 import time
 import webbrowser
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
-from crunchyroll.api import get_episode_info, get_season_episodes, get_seasons, get_series, parse_url_type
-from crunchyroll.auth import load_config, save_config, login_with_credentials, auto_detect_etp_rt
-from crunchyroll.downloader import download_episode, download_season, download_series
+from crunchyroll.api import get_episode_info, get_season_episodes, get_series, parse_url_type
+from crunchyroll.auth import load_config, save_config, auto_detect_etp_rt
+from crunchyroll.downloader import download_episode
 from crunchyroll.http_client import CrunchyrollHttpClient
 
-
-# Global state for server
-SERVER_PORT = 8000
-
+# -- state --
 initial_cfg = load_config()
-
 STATE = {
     "etp_rt": initial_cfg.get("etp_rt", ""),
-    "email": initial_cfg.get("username", ""),
-    "remember_me": True if initial_cfg.get("etp_rt") else False,
     "config": {
         "video_quality": initial_cfg.get("video_quality", "1080p"),
         "audio_quality": initial_cfg.get("audio_quality", "192k"),
-        "audio_lang": initial_cfg.get("audio_lang", "ja-JP"),
-        "subs_lang": initial_cfg.get("subs_lang", "en-US"),
+        "audio_lang":    initial_cfg.get("audio_lang", "ja-JP"),
+        "subs_lang":     initial_cfg.get("subs_lang", "en-US"),
     },
-    "current_download": {
-        "status": "idle",  # idle, downloading, completed, cancelled, error
+    "download": {
+        "status":   "idle",
         "progress": 0.0,
-        "speed": "0 MB/s",
-        "current_item": "",
-        "log": [],
-        "cancel_requested": False,
+        "episode":  "",
+        "log":      [],
     },
 }
-
 LOCK = threading.Lock()
 
 
-def add_log(msg: str):
+def _log(msg):
     with LOCK:
-        STATE["current_download"]["log"].append(f"[{time.strftime('%H:%M:%S')}] {msg}")
-        if len(STATE["current_download"]["log"]) > 100:
-            STATE["current_download"]["log"].pop(0)
+        STATE["download"]["log"].append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+        # keep it from growing forever
+        if len(STATE["download"]["log"]) > 200:
+            STATE["download"]["log"].pop(0)
 
 
-class RequestHandler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Suppress default HTTP logging
-        pass
+# -- download thread --
+def _run_download(items, vq, aq, al, sl):
+    with LOCK:
+        STATE["download"].update(status="running", progress=0.0, log=[])
 
-    def _send_json(self, data, status=200):
-        body = json.dumps(data).encode("utf-8")
+    client = CrunchyrollHttpClient(STATE["etp_rt"])
+    total = len(items)
+    _log(f"starting {total} episode(s)...")
+
+    a_langs = [x.strip() for x in al.split(",") if x.strip()] or ["ja-JP"]
+    s_langs = [x.strip() for x in sl.split(",") if x.strip()] or ["en-US"]
+
+    for idx, item in enumerate(items):
+        ep_id = item.get("id") if isinstance(item, dict) else item
+        try:
+            info = get_episode_info(client, ep_id)
+            label = f"S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d} — {info.title}"
+            with LOCK:
+                STATE["download"]["episode"]  = label
+                STATE["download"]["progress"] = round((idx / total) * 100, 1)
+            _log(f"[{idx+1}/{total}] {label} [{vq}/{aq}]")
+
+            def _cb(title, cur, tot, speed, status):
+                with LOCK:
+                    base  = (idx / total) * 100
+                    extra = ((cur / tot) / total) * 100 if tot > 0 else 0
+                    STATE["download"]["progress"] = round(base + extra, 1)
+                    STATE["download"]["episode"]  = f"{title} ({cur}/{tot})"
+
+            download_episode(
+                client=client, base_content_id=ep_id, info=info,
+                audio_langs=a_langs, subs_langs=s_langs,
+                video_quality=vq, audio_quality=aq, progress_cb=_cb,
+            )
+            _log(f"done: {label}")
+        except Exception as e:
+            _log(f"error on {ep_id}: {e}")
+
+    with LOCK:
+        STATE["download"].update(status="completed", progress=100.0, episode="all done")
+    _log(f"finished {total} episode(s)")
+
+
+# -- http handler --
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *_): pass
+
+    def _json(self, data, status=200):
+        body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Length", len(body))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _send_html(self, html_content, status=200):
-        body = html_content.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
     def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_response(204)
+        for h, v in [("Access-Control-Allow-Origin","*"),("Access-Control-Allow-Methods","GET,POST,OPTIONS"),("Access-Control-Allow-Headers","Content-Type")]:
+            self.send_header(h, v)
         self.end_headers()
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-
-        if path == "/" or path == "/index.html":
-            self._send_html(HTML_APP)
-        elif path == "/api/config":
+        path = urlparse(self.path).path
+        if path in ("/", "/index.html"):
+            body = HTML.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", len(body))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/api/state":
             with LOCK:
-                self._send_json({
-                    "etp_rt": STATE["etp_rt"],
-                    "email": STATE["email"],
-                    "remember_me": STATE["remember_me"],
-                    "config": STATE["config"],
-                })
-        elif path == "/api/progress":
-            with LOCK:
-                self._send_json(STATE["current_download"])
+                self._json({"authenticated": bool(STATE["etp_rt"]), "config": STATE["config"], "download": STATE["download"]})
         else:
-            self.send_error(404, "Not Found")
+            self.send_error(404)
 
     def do_POST(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-        content_len = int(self.headers.get("Content-Length", 0))
-        post_body = self.rfile.read(content_len) if content_len > 0 else b"{}"
-
-        try:
-            data = json.loads(post_body.decode("utf-8")) if post_body else {}
-        except Exception:
-            data = {}
+        path = urlparse(self.path).path
+        n = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(n) if n else b"{}"
+        try: data = json.loads(raw)
+        except: data = {}
 
         if path == "/api/auto-detect":
-            token = auto_detect_etp_rt()
-            if token:
-                with LOCK:
-                    STATE["etp_rt"] = token
-                    STATE["remember_me"] = True
-                save_config({"etp_rt": token})
-                add_log("Auto-detected Crunchyroll session cookie from installed browser!")
-                self._send_json({"success": True, "etp_rt": token, "message": "Cookie detected from browser!"})
+            tok = auto_detect_etp_rt()
+            if tok:
+                with LOCK: STATE["etp_rt"] = tok
+                save_config({"etp_rt": tok})
+                self._json({"success": True})
             else:
-                self._send_json({
-                    "success": False,
-                    "error": "Could not auto-detect Crunchyroll login cookie in Chrome/Edge/Firefox. Please log into crunchyroll.com in your browser first!"
-                }, status=404)
+                self._json({"success": False, "error": "couldn't find a session cookie. log into crunchyroll.com first."}, 404)
 
         elif path == "/api/login":
-            etp_rt = data.get("etp_rt", "").strip()
-            email = data.get("email", "").strip()
-            password = data.get("password", "").strip()
-            remember = data.get("remember_me", True)
-
+            tok = data.get("etp_rt", "").strip()
+            if not tok:
+                self._json({"success": False, "error": "paste your etp_rt token"}, 400); return
             try:
-                if etp_rt:
-                    add_log("Validating etp_rt session token...")
-                    client = CrunchyrollHttpClient(etp_rt=etp_rt)
-                elif email or password:
-                    self._send_json({
-                        "success": False,
-                        "error": "Crunchyroll disabled direct password API logins. Please paste your 'etp_rt' cookie token into the Session Token field above!\n(Press F12 on Crunchyroll -> Application -> Cookies -> Copy 'etp_rt')"
-                    }, status=400)
-                    return
-                else:
-                    self._send_json({"success": False, "error": "Please enter your etp_rt session cookie token."}, status=400)
-                    return
-
-                with LOCK:
-                    STATE["etp_rt"] = etp_rt
-                    STATE["email"] = email
-                    STATE["remember_me"] = remember
-
-                if remember:
-                    save_config({"etp_rt": etp_rt, "username": email})
-
-                add_log("Logged in successfully.")
-                self._send_json({"success": True, "message": "Session token saved successfully!", "etp_rt": etp_rt})
-
+                CrunchyrollHttpClient(etp_rt=tok)
+                with LOCK: STATE["etp_rt"] = tok
+                save_config({"etp_rt": tok})
+                self._json({"success": True})
             except Exception as e:
-                add_log(f"Authentication error: {e}")
-                self._send_json({"success": False, "error": str(e)}, status=401)
-
+                self._json({"success": False, "error": str(e)}, 401)
 
         elif path == "/api/config":
             with LOCK:
-                if "video_quality" in data:
-                    STATE["config"]["video_quality"] = data["video_quality"]
-                if "audio_quality" in data:
-                    STATE["config"]["audio_quality"] = data["audio_quality"]
-                if "audio_lang" in data:
-                    STATE["config"]["audio_lang"] = data["audio_lang"]
-                if "subs_lang" in data:
-                    STATE["config"]["subs_lang"] = data["subs_lang"]
+                for k in ("video_quality","audio_quality","audio_lang","subs_lang"):
+                    if k in data: STATE["config"][k] = data[k]
+            save_config(STATE["config"])
+            self._json({"success": True})
 
-                save_config(STATE["config"])
-
-            self._send_json({"success": True, "config": STATE["config"]})
-
-        elif path == "/api/fetch-info":
-            url = data.get("url", "").strip()
-            if not url:
-                self._send_json({"success": False, "error": "URL is required"}, status=400)
-                return
-
-            if not STATE["etp_rt"]:
-                self._send_json({"success": False, "error": "Not authenticated. Please log in with credentials or token."}, status=401)
-                return
-
+        elif path == "/api/fetch":
+            url = data.get("url","").strip()
+            if not url: self._json({"success":False,"error":"url required"},400); return
+            if not STATE["etp_rt"]: self._json({"success":False,"error":"not logged in"},401); return
             try:
                 client = CrunchyrollHttpClient(STATE["etp_rt"])
-                url_type, content_id = parse_url_type(url)
-
-                if url_type == "episode":
-                    info = get_episode_info(client, content_id)
-                    tree = {
-                        "type": "episode",
-                        "id": content_id,
-                        "title": info.title,
-                        "series_title": info.episode_metadata.series_title,
-                        "season_number": info.episode_metadata.season_number,
-                        "episode_number": info.episode_metadata.episode_number,
-                    }
-                    self._send_json({"success": True, "data": tree})
-
-                elif url_type in ("series", "season"):
-                    audio_lang = STATE["config"].get("audio_lang", "ja-JP")
-                    subs_lang = STATE["config"].get("subs_lang", "en-US")
-                    series_data = get_series(client, content_id, audio_lang, subs_lang)
-
-                    season_tree = []
-                    for season in series_data.get("seasons", []):
-                        episodes = get_season_episodes(client, season.id, audio_lang, subs_lang)
-                        ep_list = []
-                        for ep in episodes:
-                            ep_list.append({
-                                "id": ep.id,
-                                "title": ep.title,
-                                "episode_number": ep.episode_number,
-                                "season_number": ep.season_number,
-                                "series_title": ep.series_title,
-                            })
-                        season_tree.append({
-                            "season_id": season.id,
-                            "season_number": season.season_number,
-                            "episodes": ep_list,
-                        })
-
-                    self._send_json({
-                        "success": True,
-                        "data": {
-                            "type": "series",
-                            "id": content_id,
-                            "title": series_data.get("title", ""),
-                            "seasons": season_tree,
-                        }
-                    })
-
+                kind, cid = parse_url_type(url)
+                al, sl = STATE["config"]["audio_lang"], STATE["config"]["subs_lang"]
+                if kind == "episode":
+                    info = get_episode_info(client, cid)
+                    seasons = [{"season_number": info.episode_metadata.season_number,
+                        "episodes": [{"id":cid,"title":info.title,"episode_number":info.episode_metadata.episode_number,
+                                      "season_number":info.episode_metadata.season_number,"series_title":info.episode_metadata.series_title}]}]
+                    title = info.episode_metadata.series_title
                 else:
-                    self._send_json({"success": False, "error": "Unsupported URL format"}, status=400)
-
+                    s = get_series(client, cid, al, sl)
+                    title = s.get("title","")
+                    seasons = []
+                    for sn in s.get("seasons",[]):
+                        eps = get_season_episodes(client, sn.id, al, sl)
+                        seasons.append({"season_number":sn.season_number,
+                            "episodes":[{"id":e.id,"title":e.title,"episode_number":e.episode_number,
+                                         "season_number":e.season_number,"series_title":e.series_title} for e in eps]})
+                self._json({"success":True,"title":title,"seasons":seasons})
             except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, status=500)
+                self._json({"success":False,"error":str(e)},500)
 
-        elif path == "/api/start-download":
-            if STATE["current_download"]["status"] == "downloading":
-                self._send_json({"success": False, "error": "A download task is already in progress"}, status=400)
-                return
-
+        elif path == "/api/download":
+            if STATE["download"]["status"] == "running":
+                self._json({"success":False,"error":"already downloading"},400); return
             if not STATE["etp_rt"]:
-                self._send_json({"success": False, "error": "Not authenticated. Please log in first."}, status=401)
-                return
-
-            items = data.get("items", [])
-            video_quality = data.get("video_quality", STATE["config"]["video_quality"])
-            audio_quality = data.get("audio_quality", STATE["config"]["audio_quality"])
-            audio_lang = data.get("audio_lang", STATE["config"]["audio_lang"])
-            subs_lang = data.get("subs_lang", STATE["config"]["subs_lang"])
-
+                self._json({"success":False,"error":"not logged in"},401); return
+            items = data.get("items",[])
             if not items:
-                self._send_json({"success": False, "error": "No episodes selected for download"}, status=400)
-                return
-
-            # Start download in background thread
-            t = threading.Thread(
-                target=_run_download_task,
-                args=(items, video_quality, audio_quality, audio_lang, subs_lang),
-                daemon=True,
-            )
-            t.start()
-
-            self._send_json({"success": True, "message": "Download started"})
-
-        elif path == "/api/cancel":
-            with LOCK:
-                STATE["current_download"]["cancel_requested"] = True
-                STATE["current_download"]["status"] = "cancelling"
-            add_log("Cancellation requested by user.")
-            self._send_json({"success": True, "message": "Cancellation requested"})
-
+                self._json({"success":False,"error":"select some episodes"},400); return
+            c = STATE["config"]
+            threading.Thread(target=_run_download, daemon=True, args=(
+                items,
+                data.get("video_quality", c["video_quality"]),
+                data.get("audio_quality", c["audio_quality"]),
+                data.get("audio_lang", c["audio_lang"]),
+                data.get("subs_lang", c["subs_lang"]),
+            )).start()
+            self._json({"success": True})
         else:
-            self.send_error(404, "Not Found")
+            self.send_error(404)
 
 
-def _gui_progress_cb(ep_title, current_seg, total_segs, speed_str, status):
-    with LOCK:
-        if total_segs > 0:
-            seg_pct = round((current_seg / total_segs) * 100, 1)
-            STATE["current_download"]["progress"] = seg_pct
-        STATE["current_download"]["speed"] = speed_str
-        if ep_title:
-            STATE["current_download"]["current_item"] = f"{ep_title} ({current_seg}/{total_segs})"
-
-
-def _run_download_task(items, video_quality, audio_quality, audio_lang, subs_lang):
-    with LOCK:
-        STATE["current_download"]["status"] = "downloading"
-        STATE["current_download"]["progress"] = 0.0
-        STATE["current_download"]["cancel_requested"] = False
-        STATE["current_download"]["log"] = []
-
-    client = CrunchyrollHttpClient(STATE["etp_rt"])
-    total = len(items)
-    add_log(f"Starting batch download of {total} episode(s)...")
-
-    for idx, item in enumerate(items):
-        with LOCK:
-            if STATE["current_download"]["cancel_requested"]:
-                STATE["current_download"]["status"] = "cancelled"
-                add_log("Download cancelled by user.")
-                return
-
-        try:
-            ep_id = item.get("id") if isinstance(item, dict) else item
-            info = get_episode_info(client, ep_id)
-            add_log(f"[{idx+1}/{total}] Downloading {info.title} (S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d}) [{video_quality}/{audio_quality}]")
-
-            a_langs = [p.strip() for p in audio_lang.split(",") if p.strip()] or ["ja-JP"]
-            s_langs = [p.strip() for p in subs_lang.split(",") if p.strip()] or ["en-US"]
-
-            download_episode(
-                client=client,
-                base_content_id=ep_id,
-                info=info,
-                audio_langs=a_langs,
-                subs_langs=s_langs,
-                video_quality=video_quality,
-                audio_quality=audio_quality,
-                progress_cb=_gui_progress_cb,
-            )
-
-        except Exception as e:
-            add_log(f"Error downloading episode {item}: {e}")
-
-    with LOCK:
-        STATE["current_download"]["status"] = "completed"
-        STATE["current_download"]["progress"] = 100.0
-        STATE["current_download"]["current_item"] = "All Downloads Finished"
-    add_log("Batch download completed successfully!")
-
-
-HTML_APP = """<!DOCTYPE html>
+# -- the whole frontend in one string --
+HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Crunchyroll Downloader - Modern Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-primary: #0a0e17;
-            --bg-glass: rgba(18, 26, 43, 0.65);
-            --border-glass: rgba(255, 255, 255, 0.1);
-            --accent-orange: #ff6b00;
-            --accent-orange-hover: #ff8533;
-            --accent-cyan: #00d2ff;
-            --text-primary: #f0f4f8;
-            --text-secondary: #8c9ba5;
-            --danger: #ff4757;
-            --success: #2ed573;
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Crunchyroller</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0c0d10;
+  --card:#141518;
+  --border:#1f2028;
+  --accent:#8b7cf7;
+  --accent-dim:rgba(139,124,247,.12);
+  --accent-glow:rgba(139,124,247,.25);
+  --text:#d4d4d8;
+  --text2:#71717a;
+  --white:#f4f4f5;
+  --green:#4ade80;
+  --red:#f87171;
+  --radius:12px;
+}
+body{
+  font-family:'Inter',system-ui,sans-serif;
+  background:var(--bg);color:var(--text);
+  min-height:100vh;display:flex;flex-direction:column;align-items:center;
+}
 
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        }
+/* header */
+header{
+  width:100%;padding:16px 32px;display:flex;align-items:center;gap:12px;
+  border-bottom:1px solid var(--border);background:rgba(20,21,24,.8);
+  backdrop-filter:blur(16px);position:sticky;top:0;z-index:50;
+}
+.logo{
+  width:32px;height:32px;border-radius:8px;
+  background:linear-gradient(135deg,#7c5cbf,#a78bfa);
+  display:flex;align-items:center;justify-content:center;
+  font-size:16px;
+}
+header h1{font-size:1.15rem;font-weight:700;color:var(--white);letter-spacing:-.5px}
+header h1 b{color:var(--accent);font-weight:700}
+.badge{
+  margin-left:auto;display:flex;align-items:center;gap:6px;
+  padding:5px 12px;border-radius:99px;font-size:.75rem;font-weight:500;
+  border:1px solid var(--border);color:var(--text2);
+}
+.badge .dot{width:7px;height:7px;border-radius:50%;background:var(--text2)}
+.badge.on .dot{background:var(--green);box-shadow:0 0 6px var(--green)}
+.badge.on{color:var(--green);border-color:rgba(74,222,128,.2)}
 
-        body {
-            background: linear-gradient(135deg, #07090e 0%, #101625 50%, #0d121f 100%);
-            color: var(--text-primary);
-            min-height: 100vh;
-            padding: 24px;
-            display: flex;
-            justify-content: center;
-        }
+/* main */
+main{width:100%;max-width:880px;padding:28px 20px 60px;display:flex;flex-direction:column;gap:20px}
 
-        .container {
-            width: 100%;
-            max-width: 1100px;
-            display: flex;
-            flex-direction: column;
-            gap: 24px;
-        }
+/* card */
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:22px}
+.card-label{
+  font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--text2);margin-bottom:14px;
+}
 
-        header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 20px 28px;
-            background: var(--bg-glass);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid var(--border-glass);
-            border-radius: 16px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-        }
+/* inputs */
+input,select{
+  width:100%;background:rgba(0,0,0,.3);border:1px solid var(--border);
+  border-radius:8px;color:var(--text);font-family:inherit;font-size:.88rem;
+  padding:10px 12px;outline:none;transition:border .2s;
+}
+input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-dim)}
+input::placeholder{color:var(--text2)}
+select option{background:#1a1b1e}
+label{display:block;font-size:.78rem;color:var(--text2);margin-bottom:5px;font-weight:500}
+.field{margin-bottom:12px}.field:last-child{margin-bottom:0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:560px){.grid2{grid-template-columns:1fr}}
 
-        .brand {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
+/* buttons */
+button{
+  cursor:pointer;border:none;outline:none;font-family:inherit;
+  font-weight:600;font-size:.88rem;border-radius:8px;padding:10px 18px;
+  transition:all .15s;
+}
+button:active{transform:scale(.97)}
+.btn{background:var(--accent);color:#fff}
+.btn:hover{box-shadow:0 0 16px var(--accent-glow)}
+.btn-o{background:transparent;border:1px solid var(--border);color:var(--text)}
+.btn-o:hover{border-color:var(--accent);color:var(--accent)}
+.btn-s{padding:7px 12px;font-size:.8rem;border-radius:7px}
+.btn-w{width:100%}
 
-        .brand-icon {
-            width: 36px;
-            height: 36px;
-            background: var(--accent-orange);
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 20px;
-            color: #fff;
-            box-shadow: 0 0 15px rgba(255, 107, 0, 0.5);
-        }
+/* layout helpers */
+.row{display:flex;gap:8px}
+.row input{flex:1}
+.gap{gap:8px;display:flex}
 
-        h1 {
-            font-size: 1.4rem;
-            font-weight: 700;
-            letter-spacing: -0.5px;
-        }
+/* episode tree */
+#tree{display:none;margin-top:16px}
+.ser-title{font-size:1rem;font-weight:700;color:var(--white);margin-bottom:12px}
+.sn-block{margin-bottom:10px}
+.sn-head{
+  display:flex;align-items:center;gap:8px;padding:8px 12px;
+  background:rgba(255,255,255,.02);border:1px solid var(--border);
+  border-radius:8px;cursor:pointer;user-select:none;font-size:.84rem;font-weight:600;
+  transition:background .15s;
+}
+.sn-head:hover{background:rgba(255,255,255,.05)}
+.sn-head input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px}
+.sn-count{margin-left:auto;font-size:.72rem;color:var(--text2);font-weight:400}
+.ep-list{padding:4px 0 0 24px;display:flex;flex-direction:column;gap:2px}
+.ep-row{
+  display:flex;align-items:center;gap:8px;padding:6px 10px;
+  border-radius:7px;cursor:pointer;transition:background .12s;font-size:.82rem;
+}
+.ep-row:hover{background:rgba(255,255,255,.03)}
+.ep-row input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px;flex-shrink:0}
+.ep-num{color:var(--accent);font-weight:600;font-size:.75rem;min-width:28px}
+.ep-name{color:var(--text)}
 
-        .status-badge {
-            font-size: 0.85rem;
-            padding: 6px 14px;
-            border-radius: 20px;
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid var(--border-glass);
-            color: var(--text-secondary);
-        }
+/* progress */
+#dl-panel{display:none}
+.prog-bar-wrap{background:rgba(0,0,0,.3);border-radius:99px;height:6px;overflow:hidden;margin:10px 0}
+.prog-bar{height:100%;background:linear-gradient(to right,#7c5cbf,#a78bfa);border-radius:99px;transition:width .4s;width:0%}
+.prog-meta{display:flex;justify-content:space-between;font-size:.75rem;color:var(--text2)}
+.pill{
+  display:inline-flex;align-items:center;gap:5px;padding:3px 10px;
+  border-radius:99px;font-size:.73rem;font-weight:600;
+}
+.pill-run{background:var(--accent-dim);color:var(--accent);border:1px solid rgba(139,124,247,.25)}
+.pill-ok{background:rgba(74,222,128,.1);color:var(--green);border:1px solid rgba(74,222,128,.2)}
+.pill-err{background:rgba(248,113,113,.1);color:var(--red);border:1px solid rgba(248,113,113,.2)}
 
-        .card {
-            background: var(--bg-glass);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid var(--border-glass);
-            border-radius: 16px;
-            padding: 24px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        }
+/* log */
+#log{
+  background:rgba(0,0,0,.35);border:1px solid var(--border);border-radius:8px;
+  padding:12px;font-family:'Courier New',monospace;font-size:.73rem;
+  color:var(--text2);height:140px;overflow-y:auto;white-space:pre-wrap;
+  line-height:1.55;margin-top:12px;
+}
+#log::-webkit-scrollbar{width:3px}
+#log::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 
-        .card-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            margin-bottom: 18px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            color: var(--text-primary);
-        }
+/* toast */
+#toast{
+  position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(16px);
+  background:rgba(20,21,24,.92);border:1px solid var(--border);backdrop-filter:blur(12px);
+  padding:10px 20px;border-radius:99px;font-size:.82rem;font-weight:500;
+  opacity:0;pointer-events:none;transition:all .25s;z-index:200;
+}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#toast.err{color:var(--red);border-color:rgba(248,113,113,.3)}
+#toast.ok{color:var(--green);border-color:rgba(74,222,128,.3)}
 
-        .grid-2 {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
+/* spinner */
+.spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.15);border-top-color:var(--accent);border-radius:50%;animation:sp .6s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
 
-        @media (max-width: 768px) {
-            .grid-2 { grid-template-columns: 1fr; }
-        }
-
-        .form-group {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            margin-bottom: 16px;
-        }
-
-        label {
-            font-size: 0.85rem;
-            color: var(--text-secondary);
-            font-weight: 500;
-        }
-
-        input[type="text"], input[type="password"], select {
-            width: 100%;
-            padding: 12px 16px;
-            background: rgba(0, 0, 0, 0.3);
-            border: 1px solid var(--border-glass);
-            border-radius: 10px;
-            color: var(--text-primary);
-            font-size: 0.95rem;
-            outline: none;
-            transition: all 0.2s ease;
-        }
-
-        input:focus, select:focus {
-            border-color: var(--accent-orange);
-            box-shadow: 0 0 10px rgba(255, 107, 0, 0.25);
-        }
-
-        .checkbox-group {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            cursor: pointer;
-            user-select: none;
-            font-size: 0.9rem;
-            color: var(--text-secondary);
-        }
-
-        .checkbox-group input {
-            accent-color: var(--accent-orange);
-            width: 16px;
-            height: 16px;
-        }
-
-        .btn {
-            padding: 12px 24px;
-            border-radius: 10px;
-            border: none;
-            font-weight: 600;
-            font-size: 0.95rem;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-
-        .btn-primary {
-            background: var(--accent-orange);
-            color: white;
-            box-shadow: 0 4px 15px rgba(255, 107, 0, 0.3);
-        }
-
-        .btn-primary:hover {
-            background: var(--accent-orange-hover);
-            transform: translateY(-1px);
-        }
-
-        .btn-danger {
-            background: var(--danger);
-            color: white;
-        }
-
-        .btn-danger:hover {
-            opacity: 0.9;
-        }
-
-        .url-bar {
-            display: flex;
-            gap: 12px;
-        }
-
-        .tree-view {
-            max-height: 280px;
-            overflow-y: auto;
-            background: rgba(0, 0, 0, 0.25);
-            border: 1px solid var(--border-glass);
-            border-radius: 10px;
-            padding: 14px;
-            margin-top: 14px;
-        }
-
-        .tree-item {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 8px 10px;
-            border-radius: 6px;
-            transition: background 0.2s;
-        }
-
-        .tree-item:hover {
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        .progress-bar-container {
-            width: 100%;
-            height: 12px;
-            background: rgba(0, 0, 0, 0.4);
-            border-radius: 6px;
-            overflow: hidden;
-            border: 1px solid var(--border-glass);
-            margin: 14px 0;
-        }
-
-        .progress-bar {
-            height: 100%;
-            width: 0%;
-            background: linear-gradient(90deg, var(--accent-orange), var(--accent-cyan));
-            transition: width 0.3s ease;
-        }
-
-        .log-box {
-            background: rgba(0, 0, 0, 0.5);
-            border: 1px solid var(--border-glass);
-            border-radius: 10px;
-            padding: 12px;
-            font-family: monospace;
-            font-size: 0.85rem;
-            height: 140px;
-            overflow-y: auto;
-            color: #a0aec0;
-        }
-
-        .log-entry {
-            margin-bottom: 4px;
-        }
-    </style>
+hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
+</style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="brand">
-                <div class="brand-icon">CR</div>
-                <h1>Crunchyroll Downloader</h1>
-            </div>
-            <div class="status-badge" id="authStatus">Not Authenticated</div>
-        </header>
 
-        <div class="grid-2">
-            <!-- Login Panel -->
-            <div class="card">
-                <div class="card-title">Authentication</div>
-                <div class="form-group">
-                    <label>Email / Username</label>
-                    <input type="text" id="emailInput" placeholder="user@example.com">
-                </div>
-                <div class="form-group">
-                    <label>Password</label>
-                    <input type="password" id="passwordInput" placeholder="Account password...">
-                </div>
-                <div class="form-group">
-                    <label>Or Session Token (etp_rt Cookie)</label>
-                    <input type="password" id="etpRtInput" placeholder="Paste etp_rt token directly...">
-                </div>
-                <div class="form-group">
-                    <label class="checkbox-group">
-                        <input type="checkbox" id="rememberMeInput" checked> Remember Me
-                    </label>
-                </div>
-                <div style="display: flex; gap: 10px;">
-                    <button class="btn btn-primary" onclick="handleLogin()">Save Session</button>
-                    <button class="btn btn-primary" style="background: #00d2ff; color: #000;" onclick="autoDetectCookie()">⚡ Auto-Detect from Browser</button>
-                </div>
-            </div>
+<header>
+  <div class="logo">🌀</div>
+  <h1>crunchy<b>roller</b></h1>
+  <div class="badge" id="badge"><div class="dot"></div><span id="badge-txt">offline</span></div>
+</header>
 
-            <!-- Quality & Settings -->
-            <div class="card">
-                <div class="card-title">Download Settings</div>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label>Video Quality</label>
-                        <select id="videoQuality">
-                            <option value="1080p">1080p (Full HD)</option>
-                            <option value="720p">720p (HD)</option>
-                            <option value="480p">480p (SD)</option>
-                            <option value="360p">360p (Fast)</option>
-                            <option value="240p">240p</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Audio Quality</label>
-                        <select id="audioQuality">
-                            <option value="192k">192k (High)</option>
-                            <option value="96k">96k (Standard)</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="grid-2">
-                    <div class="form-group">
-                        <label>Audio Language</label>
-                        <input type="text" id="audioLang" value="ja-JP">
-                    </div>
-                    <div class="form-group">
-                        <label>Subtitle Language</label>
-                        <input type="text" id="subsLang" value="en-US">
-                    </div>
-                </div>
-                <button class="btn btn-primary" style="margin-top: 4px;" onclick="saveConfig()">Save Settings</button>
-            </div>
-        </div>
+<main>
 
-        <!-- URL & Tree View -->
-        <div class="card">
-            <div class="card-title">Content Selection (Series / Season / Episode)</div>
-            <div class="url-bar">
-                <input type="text" id="urlInput" placeholder="Paste Crunchyroll Series, Season, or Episode URL...">
-                <button class="btn btn-primary" onclick="fetchInfo()">Fetch Content</button>
-            </div>
-            <div class="tree-view" id="treeView">
-                <div style="color: var(--text-secondary); text-align: center; padding: 20px;">
-                    Enter a Series, Season, or Episode URL above and click Fetch Content.
-                </div>
-            </div>
-            <div style="margin-top: 16px; display: flex; justify-content: flex-end;">
-                <button class="btn btn-primary" onclick="startDownload()">Start Batch Download</button>
-            </div>
-        </div>
-
-        <!-- Dashboard / Live Progress -->
-        <div class="card">
-            <div class="card-title" style="justify-content: space-between;">
-                <span>Live Download Dashboard</span>
-                <button class="btn btn-danger" onclick="cancelDownload()">Cancel Download</button>
-            </div>
-            <div style="display: flex; justify-content: space-between; font-size: 0.9rem;">
-                <span id="currentItemText">Status: Idle</span>
-                <span id="progressText">0%</span>
-            </div>
-            <div class="progress-bar-container">
-                <div class="progress-bar" id="progressBar"></div>
-            </div>
-            <div class="log-box" id="logBox"></div>
-        </div>
+  <!-- auth -->
+  <div class="card" id="auth-card">
+    <div class="card-label">session</div>
+    <div class="field">
+      <label>etp_rt cookie</label>
+      <div class="row">
+        <input type="password" id="tok" placeholder="paste your token here…">
+        <button class="btn-o btn-s" onclick="saveToken()">save</button>
+      </div>
     </div>
+    <button class="btn btn-w" onclick="detect()" style="margin-top:10px">⚡ auto-detect from browser</button>
+    <p style="font-size:.72rem;color:var(--text2);margin-top:10px;line-height:1.45">
+      log into <strong style="color:var(--white)">crunchyroll.com</strong> in your browser, then click auto-detect.
+      or grab it manually: F12 → Application → Cookies → <code>etp_rt</code>
+    </p>
+  </div>
 
-    <script>
-        let fetchedTreeData = null;
+  <!-- settings -->
+  <div class="card">
+    <div class="card-label">settings</div>
+    <div class="grid2">
+      <div class="field">
+        <label>video quality</label>
+        <select id="vq" onchange="saveCfg()">
+          <option value="1080p">1080p</option>
+          <option value="720p">720p</option>
+          <option value="480p">480p</option>
+          <option value="360p">360p</option>
+          <option value="240p">240p</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>audio quality</label>
+        <select id="aq" onchange="saveCfg()">
+          <option value="192k">192k</option>
+          <option value="96k">96k</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>audio language</label>
+        <select id="al" onchange="saveCfg()">
+          <option value="ja-JP">Japanese</option>
+          <option value="en-US">English</option>
+          <option value="de-DE">German</option>
+          <option value="fr-FR">French</option>
+          <option value="es-419">Spanish (Latin)</option>
+          <option value="pt-BR">Portuguese (BR)</option>
+          <option value="ko-KR">Korean</option>
+          <option value="zh-CN">Chinese (CN)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>subtitles</label>
+        <select id="sl" onchange="saveCfg()">
+          <option value="en-US">English</option>
+          <option value="de-DE">German</option>
+          <option value="fr-FR">French</option>
+          <option value="es-419">Spanish (Latin)</option>
+          <option value="pt-BR">Portuguese (BR)</option>
+          <option value="ru-RU">Russian</option>
+          <option value="ar-SA">Arabic</option>
+        </select>
+      </div>
+    </div>
+  </div>
 
-        async function initPage() {
-            const res = await fetch('/api/config');
-            const data = await res.json();
-            if (data.etp_rt) {
-                document.getElementById('etpRtInput').value = data.etp_rt;
-                document.getElementById('authStatus').textContent = 'Authenticated';
-                document.getElementById('authStatus').style.color = '#2ed573';
-            }
-            if (data.email) {
-                document.getElementById('emailInput').value = data.email;
-            }
-            if (data.config) {
-                if (data.config.video_quality) document.getElementById('videoQuality').value = data.config.video_quality;
-                if (data.config.audio_quality) document.getElementById('audioQuality').value = data.config.audio_quality;
-                if (data.config.audio_lang) document.getElementById('audioLang').value = data.config.audio_lang;
-                if (data.config.subs_lang) document.getElementById('subsLang').value = data.config.subs_lang;
-            }
-        }
-        initPage();
+  <!-- content -->
+  <div class="card">
+    <div class="card-label">content</div>
+    <div class="row">
+      <input type="text" id="url" placeholder="crunchyroll.com/series/… or /watch/…">
+      <button class="btn" id="fetch-btn" onclick="fetchUrl()">fetch</button>
+    </div>
+    <div id="tree">
+      <hr class="div">
+      <div class="ser-title" id="ser-title"></div>
+      <div id="sn-list"></div>
+      <hr class="div">
+      <div class="row" style="justify-content:flex-end">
+        <button class="btn-o btn-s" onclick="pickAll(true)">all</button>
+        <button class="btn-o btn-s" onclick="pickAll(false)">none</button>
+        <button class="btn" onclick="startDl()">download selected</button>
+      </div>
+    </div>
+  </div>
 
-        async function autoDetectCookie() {
-            const res = await fetch('/api/auto-detect', { method: 'POST' });
-            const data = await res.json();
-            if (data.success) {
-                document.getElementById('etpRtInput').value = data.etp_rt;
-                document.getElementById('authStatus').textContent = 'Authenticated';
-                document.getElementById('authStatus').style.color = '#2ed573';
-                alert('Success! Cookie auto-detected from browser and saved!');
-            } else {
-                alert('Error: ' + data.error);
-            }
-        }
+  <!-- progress -->
+  <div class="card" id="dl-panel">
+    <div class="card-label">progress</div>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span id="pill" class="pill pill-run"><span class="spin"></span>downloading</span>
+      <span id="cur-ep" style="font-size:.8rem;color:var(--text2)"></span>
+    </div>
+    <div class="prog-bar-wrap"><div class="prog-bar" id="pbar"></div></div>
+    <div class="prog-meta"><span id="ppct">0%</span><span></span></div>
+    <div id="log"></div>
+  </div>
 
-        async function handleLogin() {
+</main>
+<div id="toast"></div>
 
-            const email = document.getElementById('emailInput').value;
-            const password = document.getElementById('passwordInput').value;
-            const etp_rt = document.getElementById('etpRtInput').value;
-            const remember_me = document.getElementById('rememberMeInput').checked;
+<script>
+let _poll=null;
 
-            const res = await fetch('/api/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, password, etp_rt, remember_me })
-            });
-            const data = await res.json();
-            if (data.success) {
-                document.getElementById('authStatus').textContent = 'Authenticated';
-                document.getElementById('authStatus').style.color = '#2ed573';
-                if (data.etp_rt) document.getElementById('etpRtInput').value = data.etp_rt;
-                alert('Logged in successfully!');
-            } else {
-                alert('Error: ' + data.error);
-            }
-        }
+function toast(m,t='ok'){const e=document.getElementById('toast');e.textContent=m;e.className='show '+t;clearTimeout(e._t);e._t=setTimeout(()=>e.className='',2800)}
+async function api(p,b=null){const o=b!=null?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{};return(await fetch(p,o)).json()}
 
-        async function saveConfig() {
-            const video_quality = document.getElementById('videoQuality').value;
-            const audio_quality = document.getElementById('audioQuality').value;
-            const audio_lang = document.getElementById('audioLang').value;
-            const subs_lang = document.getElementById('subsLang').value;
+window.addEventListener('DOMContentLoaded',async()=>{const s=await api('/api/state');apply(s)});
 
-            await fetch('/api/config', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ video_quality, audio_quality, audio_lang, subs_lang })
-            });
-            alert('Settings updated!');
-        }
+function apply(s){
+  const b=document.getElementById('badge'),t=document.getElementById('badge-txt');
+  if(s.authenticated){b.classList.add('on');t.textContent='connected'}else{b.classList.remove('on');t.textContent='offline'}
+  const m={vq:'video_quality',aq:'audio_quality',al:'audio_lang',sl:'subs_lang'};
+  Object.entries(m).forEach(([id,k])=>{const e=document.getElementById(id);if(e&&s.config[k])e.value=s.config[k]});
+  if(s.download.status==='running')poll();
+  updDl(s.download);
+}
 
-        async function fetchInfo() {
-            const url = document.getElementById('urlInput').value;
-            const treeView = document.getElementById('treeView');
-            treeView.innerHTML = '<div style="color: var(--text-secondary); text-align: center; padding: 20px;">Fetching metadata...</div>';
+async function detect(){toast('scanning…');const r=await api('/api/auto-detect',{});r.success?(toast('found it!'),document.getElementById('badge').classList.add('on'),document.getElementById('badge-txt').textContent='connected'):toast(r.error||'nope','err')}
+async function saveToken(){const v=document.getElementById('tok').value.trim();if(!v){toast('paste your token','err');return}const r=await api('/api/login',{etp_rt:v});r.success?(toast('saved!'),document.getElementById('badge').classList.add('on'),document.getElementById('badge-txt').textContent='connected',document.getElementById('tok').value=''):toast(r.error||'bad token','err')}
+async function saveCfg(){await api('/api/config',{video_quality:document.getElementById('vq').value,audio_quality:document.getElementById('aq').value,audio_lang:document.getElementById('al').value,subs_lang:document.getElementById('sl').value})}
 
-            const res = await fetch('/api/fetch-info', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url })
-            });
-            const result = await res.json();
+async function fetchUrl(){
+  const u=document.getElementById('url').value.trim();if(!u){toast('paste a url','err');return}
+  const btn=document.getElementById('fetch-btn');btn.disabled=true;btn.innerHTML='<span class="spin"></span>';
+  const r=await api('/api/fetch',{url:u});btn.disabled=false;btn.textContent='fetch';
+  if(!r.success){toast(r.error||'failed','err');return}
+  renderTree(r);toast(r.title,'ok');
+}
 
-            if (!result.success) {
-                treeView.innerHTML = `<div style="color: var(--danger); text-align: center; padding: 20px;">Error: ${result.error}</div>`;
-                return;
-            }
+function renderTree(d){
+  document.getElementById('ser-title').textContent=d.title;
+  const list=document.getElementById('sn-list');list.innerHTML='';
+  d.seasons.forEach((sn,si)=>{
+    const bl=document.createElement('div');bl.className='sn-block';
+    const hd=document.createElement('div');hd.className='sn-head';
+    const sc=document.createElement('input');sc.type='checkbox';sc.checked=true;sc.id='s'+si;
+    sc.addEventListener('change',e=>{bl.querySelectorAll('.epc').forEach(c=>c.checked=e.target.checked)});
+    const lb=document.createElement('label');lb.htmlFor='s'+si;lb.textContent='season '+sn.season_number;lb.style.cssText='cursor:pointer;color:var(--white);font-weight:600;margin:0';
+    const ct=document.createElement('span');ct.className='sn-count';ct.textContent=sn.episodes.length+' ep';
+    hd.append(sc,lb,ct);
+    const el=document.createElement('div');el.className='ep-list';
+    sn.episodes.forEach(ep=>{
+      const row=document.createElement('div');row.className='ep-row';
+      const cb=document.createElement('input');cb.type='checkbox';cb.checked=true;cb.className='epc';cb.dataset.id=ep.id;
+      const num=document.createElement('span');num.className='ep-num';num.textContent='E'+String(ep.episode_number).padStart(2,'0');
+      const nm=document.createElement('span');nm.className='ep-name';nm.textContent=ep.title;
+      row.addEventListener('click',e=>{if(e.target!==cb)cb.checked=!cb.checked});
+      row.append(cb,num,nm);el.appendChild(row);
+    });
+    bl.append(hd,el);list.appendChild(bl);
+  });
+  document.getElementById('tree').style.display='block';
+}
 
-            fetchedTreeData = result.data;
-            renderTree(result.data);
-        }
+function pickAll(v){document.querySelectorAll('.epc,[id^="s"]').forEach(c=>c.checked=v)}
 
-        function renderTree(data) {
-            const treeView = document.getElementById('treeView');
-            treeView.innerHTML = '';
+async function startDl(){
+  const sel=[...document.querySelectorAll('.epc:checked')].map(c=>({id:c.dataset.id}));
+  if(!sel.length){toast('pick some episodes','err');return}
+  const r=await api('/api/download',{items:sel,video_quality:document.getElementById('vq').value,audio_quality:document.getElementById('aq').value,audio_lang:document.getElementById('al').value,subs_lang:document.getElementById('sl').value});
+  if(!r.success){toast(r.error||'nope','err');return}
+  toast(sel.length+' episode(s) starting…');document.getElementById('dl-panel').style.display='block';poll();
+}
 
-            if (data.type === 'episode') {
-                treeView.innerHTML = `
-                    <div class="tree-item">
-                        <input type="checkbox" class="ep-check" value="${data.id}" checked>
-                        <span>[S${data.season_number}E${data.episode_number}] ${data.series_title} - ${data.title}</span>
-                    </div>
-                `;
-            } else if (data.type === 'series') {
-                data.seasons.forEach(season => {
-                    const seasonHeader = document.createElement('div');
-                    seasonHeader.style.fontWeight = 'bold';
-                    seasonHeader.style.marginTop = '12px';
-                    seasonHeader.style.marginBottom = '6px';
-                    seasonHeader.innerText = `Season ${season.season_number} (${season.episodes.length} Episodes)`;
-                    treeView.appendChild(seasonHeader);
+function poll(){if(_poll)return;_poll=setInterval(async()=>{const s=await api('/api/state');updDl(s.download);if(s.download.status!=='running'){clearInterval(_poll);_poll=null}},1200)}
 
-                    season.episodes.forEach(ep => {
-                        const item = document.createElement('div');
-                        item.className = 'tree-item';
-                        item.innerHTML = `
-                            <input type="checkbox" class="ep-check" value="${ep.id}" checked>
-                            <span>E${ep.episode_number} - ${ep.title}</span>
-                        `;
-                        treeView.appendChild(item);
-                    });
-                });
-            }
-        }
-
-        async function startDownload() {
-            const checkboxes = document.querySelectorAll('.ep-check:checked');
-            const items = Array.from(checkboxes).map(cb => ({ id: cb.value }));
-
-            if (items.length === 0) {
-                alert('Please select at least one episode to download.');
-                return;
-            }
-
-            const res = await fetch('/api/start-download', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    items,
-                    video_quality: document.getElementById('videoQuality').value,
-                    audio_quality: document.getElementById('audioQuality').value,
-                    audio_lang: document.getElementById('audioLang').value,
-                    subs_lang: document.getElementById('subsLang').value,
-                })
-            });
-            const data = await res.json();
-            if (!data.success) {
-                alert(data.error);
-            }
-        }
-
-        async function cancelDownload() {
-            await fetch('/api/cancel', { method: 'POST' });
-        }
-
-        async function pollProgress() {
-            try {
-                const res = await fetch('/api/progress');
-                const data = await res.json();
-
-                document.getElementById('progressBar').style.width = data.progress + '%';
-                document.getElementById('progressText').textContent = data.progress + '% (' + data.speed + ')';
-                document.getElementById('currentItemText').textContent = data.current_item ? `Current: ${data.current_item}` : `Status: ${data.status}`;
-
-                const logBox = document.getElementById('logBox');
-                logBox.innerHTML = data.log.map(line => `<div class="log-entry">${line}</div>`).join('');
-                logBox.scrollTop = logBox.scrollHeight;
-            } catch (e) {}
-        }
-
-        setInterval(pollProgress, 1000);
-    </script>
+function updDl(dl){
+  if(!dl||dl.status==='idle')return;
+  document.getElementById('dl-panel').style.display='block';
+  const p=Math.min(100,dl.progress||0);
+  document.getElementById('pbar').style.width=p+'%';
+  document.getElementById('ppct').textContent=p.toFixed(1)+'%';
+  document.getElementById('cur-ep').textContent=dl.episode||'';
+  const pill=document.getElementById('pill');
+  if(dl.status==='running'){pill.className='pill pill-run';pill.innerHTML='<span class="spin"></span>downloading'}
+  else if(dl.status==='completed'){pill.className='pill pill-ok';pill.innerHTML='✓ done'}
+  else{pill.className='pill pill-err';pill.innerHTML='✗ '+dl.status}
+  const log=document.getElementById('log');
+  if(dl.log&&dl.log.length){log.textContent=dl.log.join('\n');log.scrollTop=log.scrollHeight}
+}
+</script>
 </body>
-</html>
-"""
+</html>"""
 
 
-def start_server(port=SERVER_PORT, open_browser=True):
-    server_address = ("", port)
-    httpd = http.server.HTTPServer(server_address, RequestHandler)
-    url = f"http://localhost:{port}"
-    print(f"Starting Web GUI Server on {url} ...")
-
+def start_server(port=8000, open_browser=True):
+    srv = http.server.HTTPServer(("", port), Handler)
+    print(f"crunchyroller → http://localhost:{port}")
     if open_browser:
-        threading.Thread(target=lambda: (time.sleep(1), webbrowser.open(url)), daemon=True).start()
-
+        threading.Timer(0.5, lambda: webbrowser.open(f"http://localhost:{port}")).start()
     try:
-        httpd.serve_forever()
+        srv.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down Web GUI Server.")
-
-
-if __name__ == "__main__":
-    start_server(8000, True)
+        print("\nstopped.")
