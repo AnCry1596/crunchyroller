@@ -4,3 +4,5 @@ requests>=2.31.0
 curl_cffi>=0.7.0
 pymp4>=1.4.0
 xmltodict>=0.13.0
+pywebview>=5.0.0
+

@@ -7,7 +7,7 @@ import webbrowser
 from urllib.parse import urlparse
 
 from crunchyroll.api import get_episode_info, get_season_episodes, get_series, parse_url_type
-from crunchyroll.auth import load_config, save_config, auto_detect_etp_rt
+from crunchyroll.auth import load_config, save_config, auto_detect_etp_rt, open_webview_login
 from crunchyroll.downloader import download_episode
 from crunchyroll.http_client import CrunchyrollHttpClient
 
@@ -131,6 +131,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._json({"success": True})
             else:
                 self._json({"success": False, "error": "couldn't find a session cookie. log into crunchyroll.com first."}, 404)
+
+        elif path == "/api/webview-login":
+            tok = open_webview_login()
+            if tok:
+                with LOCK: STATE["etp_rt"] = tok
+                save_config({"etp_rt": tok})
+                self._json({"success": True, "etp_rt": tok})
+            else:
+                self._json({"success": False, "error": "In-app login window closed or session token not detected."}, 400)
 
         elif path == "/api/login":
             tok = data.get("etp_rt", "").strip()
@@ -380,10 +389,12 @@ hr.div{border:none;border-top:1px solid var(--border);margin:14px 0}
         <button class="btn-o btn-s" onclick="saveToken()">save</button>
       </div>
     </div>
-    <button class="btn btn-w" onclick="detect()" style="margin-top:10px">⚡ auto-detect from browser</button>
+    <div class="grid2" style="margin-top:10px">
+      <button class="btn" onclick="detect()">⚡ auto-detect</button>
+      <button class="btn-o" onclick="webviewLogin()">🌐 in-app browser login</button>
+    </div>
     <p style="font-size:.72rem;color:var(--text2);margin-top:10px;line-height:1.45">
-      log into <strong style="color:var(--white)">crunchyroll.com</strong> in your browser, then click auto-detect.
-      or grab it manually: F12 → Application → Cookies → <code>etp_rt</code>
+      click <strong>in-app browser login</strong> to log in via an embedded window, or <strong>auto-detect</strong> if already logged in in Chrome/Firefox/Edge.
     </p>
   </div>
 
@@ -489,6 +500,7 @@ function apply(s){
 }
 
 async function detect(){toast('scanning…');const r=await api('/api/auto-detect',{});r.success?(toast('found it!'),document.getElementById('badge').classList.add('on'),document.getElementById('badge-txt').textContent='connected'):toast(r.error||'nope','err')}
+async function webviewLogin(){toast('opening in-app browser…');const r=await api('/api/webview-login',{});r.success?(toast('logged in!'),document.getElementById('badge').classList.add('on'),document.getElementById('badge-txt').textContent='connected'):toast(r.error||'closed','err')}
 async function saveToken(){const v=document.getElementById('tok').value.trim();if(!v){toast('paste your token','err');return}const r=await api('/api/login',{etp_rt:v});r.success?(toast('saved!'),document.getElementById('badge').classList.add('on'),document.getElementById('badge-txt').textContent='connected',document.getElementById('tok').value=''):toast(r.error||'bad token','err')}
 async function saveCfg(){await api('/api/config',{video_quality:document.getElementById('vq').value,audio_quality:document.getElementById('aq').value,audio_lang:document.getElementById('al').value,subs_lang:document.getElementById('sl').value})}
 

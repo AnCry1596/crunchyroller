@@ -213,3 +213,48 @@ def save_config(config_dict: Dict[str, Any], config_path: str = CONFIG_FILE) -> 
     existing.update(config_dict)
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(existing, f, indent=4)
+
+
+def open_webview_login() -> Optional[str]:
+    """
+    Opens an in-app browser window navigating to crunchyroll.com/login.
+    Monitors cookies for etp_rt upon successful user login.
+    """
+    try:
+        import webview
+    except ImportError:
+        return None
+
+    captured = {"etp_rt": None}
+
+    def _check_cookies(window):
+        import time
+        while not captured["etp_rt"]:
+            time.sleep(1)
+            try:
+                cookies = window.get_cookies()
+                if cookies:
+                    for c in cookies:
+                        # handles both dicts and pywebview cookie objects
+                        name = getattr(c, "name", "") if hasattr(c, "name") else (c.get("name", "") if isinstance(c, dict) else "")
+                        val = getattr(c, "value", "") if hasattr(c, "value") else (c.get("value", "") if isinstance(c, dict) else "")
+                        if name == "etp_rt" and val:
+                            captured["etp_rt"] = val
+                            window.destroy()
+                            break
+            except Exception:
+                pass
+
+    import threading
+    window = webview.create_window(
+        "Crunchyroll In-App Login",
+        "https://www.crunchyroll.com/login",
+        width=960,
+        height=720,
+    )
+    t = threading.Thread(target=_check_cookies, args=(window,), daemon=True)
+    t.start()
+    webview.start()
+
+    return captured["etp_rt"]
+
