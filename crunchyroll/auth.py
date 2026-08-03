@@ -218,43 +218,71 @@ def save_config(config_dict: Dict[str, Any], config_path: str = CONFIG_FILE) -> 
 def open_webview_login() -> Optional[str]:
     """
     Opens an in-app browser window navigating to crunchyroll.com/login.
-    Monitors cookies for etp_rt upon successful user login.
+    Captures etp_rt upon successful user login.
     """
+    import sys
+    import subprocess
+    import time
+
+    script = """
+import time, threading, http.cookies
+import webview
+
+captured = {"token": None}
+
+def check(w):
+    while not captured["token"]:
+        time.sleep(0.5)
+        try:
+            cookies = w.get_cookies()
+            if cookies:
+                for c in cookies:
+                    if hasattr(c, 'items'):
+                        for k, m in c.items():
+                            if k == 'etp_rt' and m.value:
+                                captured["token"] = m.value
+                                print(f"CAPTURED_TOKEN:{m.value}", flush=True)
+                                w.destroy()
+                                return
+        except Exception:
+            pass
+
+w = webview.create_window('Crunchyroll Login', 'https://www.crunchyroll.com/login', width=960, height=720)
+t = threading.Thread(target=check, args=(w,), daemon=True)
+t.start()
+webview.start()
+"""
     try:
-        import webview
-    except ImportError:
-        return None
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
 
-    captured = {"etp_rt": None}
+        token = None
+        start_time = time.time()
+        while time.time() - start_time < 300:
+            if proc.poll() is not None:
+                break
+            line = proc.stdout.readline()
+            if line and "CAPTURED_TOKEN:" in line:
+                token = line.split("CAPTURED_TOKEN:")[1].strip()
+                break
+            time.sleep(0.2)
 
-    def _check_cookies(window):
-        import time
-        while not captured["etp_rt"]:
-            time.sleep(1)
+        if proc.poll() is None:
             try:
-                cookies = window.get_cookies()
-                if cookies:
-                    for c in cookies:
-                        # handles both dicts and pywebview cookie objects
-                        name = getattr(c, "name", "") if hasattr(c, "name") else (c.get("name", "") if isinstance(c, dict) else "")
-                        val = getattr(c, "value", "") if hasattr(c, "value") else (c.get("value", "") if isinstance(c, dict) else "")
-                        if name == "etp_rt" and val:
-                            captured["etp_rt"] = val
-                            window.destroy()
-                            break
+                proc.terminate()
             except Exception:
                 pass
 
-    import threading
-    window = webview.create_window(
-        "Crunchyroll In-App Login",
-        "https://www.crunchyroll.com/login",
-        width=960,
-        height=720,
-    )
-    t = threading.Thread(target=_check_cookies, args=(window,), daemon=True)
-    t.start()
-    webview.start()
+        if not token:
+            token = auto_detect_etp_rt()
 
-    return captured["etp_rt"]
+        return token
+    except Exception as e:
+        print(f"Error launching webview login: {e}")
+        return auto_detect_etp_rt()
+
 
