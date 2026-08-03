@@ -1,0 +1,32 @@
+# Keys & Credentials (NEVER COMMIT)
+client_id.bin
+private_key.pem
+*.wvd
+config.json
+
+# Binaries & Large Executables
+ffmpeg.exe
+ffmpeg
+
+# Python Cache & Environment
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+venv/
+
+# Media Downloads & Temporary Outputs
+*.mkv
+*.mp4
+*.m4a
+*.ass
+*.tmp
+*.raw.mp4
+
+# IDE & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
