@@ -1,8 +1,22 @@
 import os
+import shutil
 import subprocess
 from typing import List
 from .types import EpisodeInfo, MediaTrack
 from .utils import LANGUAGE_CODES, track_title
+
+
+def find_ffmpeg() -> str:
+    """locates ffmpeg binary locally or in PATH"""
+    local_binary = os.path.join(os.getcwd(), "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+    if os.path.exists(local_binary):
+        return local_binary
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    raise FileNotFoundError(
+        "FFmpeg is not installed or not in PATH! Please install FFmpeg or place 'ffmpeg.exe' in the project folder."
+    )
 
 
 def merge_everything(
@@ -13,7 +27,9 @@ def merge_everything(
     info: EpisodeInfo,
 ) -> None:
     """mux everything into a single mkv"""
-    args = ["ffmpeg", "-y", "-i", video_file]
+    ffmpeg_bin = find_ffmpeg()
+    args = [ffmpeg_bin, "-y", "-i", video_file]
+
     for audio in audio_tracks:
         args.extend(["-i", audio.file])
     for sub in sub_tracks:
