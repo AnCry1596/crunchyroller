@@ -20,105 +20,109 @@
 
   <main>
 
-    <div class="card">
-      <div class="card-label">session</div>
-      <div class="field">
-        <label>session token</label>
+    <div class="shell">
+
+      <div class="card">
+        <div class="card-label">session</div>
+        <div class="field">
+          <label>session token</label>
+          <div class="row">
+            <input type="password" id="tok" placeholder="etp_rt cookie value">
+            <button class="btn-s" onclick="saveToken()">save</button>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top:12px">
+          <button onclick="detect()">auto-detect</button>
+          <button onclick="webviewLogin()">browser login</button>
+        </div>
+        <p class="hint">
+          log into <strong>crunchyroll.com</strong> first, then click auto-detect. or use browser login to sign in here.
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="card-label">quality</div>
+        <div class="grid2">
+          <div class="field">
+            <label>video</label>
+            <select id="vq" onchange="saveCfg()">
+              <option value="1080p">1080p</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+              <option value="360p">360p</option>
+              <option value="240p">240p</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>audio</label>
+            <select id="aq" onchange="saveCfg()">
+              <option value="192k">192k</option>
+              <option value="96k">96k</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>audio language</label>
+            <select id="al" onchange="saveCfg()">
+              <option value="ja-JP">Japanese</option>
+              <option value="en-US">English</option>
+              <option value="de-DE">German</option>
+              <option value="fr-FR">French</option>
+              <option value="es-419">Spanish</option>
+              <option value="pt-BR">Portuguese</option>
+              <option value="ko-KR">Korean</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>subtitles</label>
+            <select id="sl" onchange="saveCfg()">
+              <option value="en-US">English</option>
+              <option value="de-DE">German</option>
+              <option value="fr-FR">French</option>
+              <option value="es-419">Spanish</option>
+              <option value="pt-BR">Portuguese</option>
+              <option value="ru-RU">Russian</option>
+              <option value="ar-SA">Arabic</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">download</div>
         <div class="row">
-          <input type="password" id="tok" placeholder="etp_rt cookie value">
-          <button class="btn-s" onclick="saveToken()">save</button>
+          <input type="text" id="url" placeholder="paste a crunchyroll url">
+          <button id="fetch-btn" onclick="fetchUrl()">fetch</button>
         </div>
-      </div>
-      <div class="grid2" style="margin-top:12px">
-        <button onclick="detect()">auto-detect</button>
-        <button onclick="webviewLogin()">browser login</button>
-      </div>
-      <p class="hint">
-        log into <strong>crunchyroll.com</strong> first, then click auto-detect. or use browser login to sign in here.
-      </p>
-    </div>
 
-    <div class="card">
-      <div class="card-label">quality</div>
-      <div class="grid2">
-        <div class="field">
-          <label>video</label>
-          <select id="vq" onchange="saveCfg()">
-            <option value="1080p">1080p</option>
-            <option value="720p">720p</option>
-            <option value="480p">480p</option>
-            <option value="360p">360p</option>
-            <option value="240p">240p</option>
-          </select>
+        <div id="tree">
+          <hr class="div">
+          <div class="ser-title" id="ser-title"></div>
+          <div id="sn-list"></div>
+          <hr class="div">
+          <div class="row" style="justify-content:flex-end">
+            <button class="btn-s" onclick="pickAll(true)">all</button>
+            <button class="btn-s" onclick="pickAll(false)">none</button>
+            <button onclick="startDl()">download</button>
+          </div>
         </div>
-        <div class="field">
-          <label>audio</label>
-          <select id="aq" onchange="saveCfg()">
-            <option value="192k">192k</option>
-            <option value="96k">96k</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>audio language</label>
-          <select id="al" onchange="saveCfg()">
-            <option value="ja-JP">Japanese</option>
-            <option value="en-US">English</option>
-            <option value="de-DE">German</option>
-            <option value="fr-FR">French</option>
-            <option value="es-419">Spanish</option>
-            <option value="pt-BR">Portuguese</option>
-            <option value="ko-KR">Korean</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>subtitles</label>
-          <select id="sl" onchange="saveCfg()">
-            <option value="en-US">English</option>
-            <option value="de-DE">German</option>
-            <option value="fr-FR">French</option>
-            <option value="es-419">Spanish</option>
-            <option value="pt-BR">Portuguese</option>
-            <option value="ru-RU">Russian</option>
-            <option value="ar-SA">Arabic</option>
-          </select>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-label">download</div>
-      <div class="row">
-        <input type="text" id="url" placeholder="paste a crunchyroll url">
-        <button id="fetch-btn" onclick="fetchUrl()">fetch</button>
       </div>
 
-      <div id="tree">
-        <hr class="div">
-        <div class="ser-title" id="ser-title"></div>
-        <div id="sn-list"></div>
-        <hr class="div">
-        <div class="row" style="justify-content:flex-end">
-          <button class="btn-s" onclick="pickAll(true)">all</button>
-          <button class="btn-s" onclick="pickAll(false)">none</button>
-          <button onclick="startDl()">download</button>
+      <div class="card" id="dl-panel">
+        <div class="card-label">progress</div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span id="pill" class="pill pill-run"><span class="spin"></span> downloading</span>
+          <span id="cur-ep" style="font-size:.75rem;color:var(--dim)"></span>
         </div>
+        <div class="prog-bar-wrap">
+          <div class="prog-bar" id="pbar"></div>
+        </div>
+        <div class="prog-meta">
+          <span id="ppct">0%</span>
+          <span></span>
+        </div>
+        <div id="log"></div>
       </div>
-    </div>
 
-    <div class="card" id="dl-panel">
-      <div class="card-label">progress</div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span id="pill" class="pill pill-run"><span class="spin"></span> downloading</span>
-        <span id="cur-ep" style="font-size:.75rem;color:var(--dim)"></span>
-      </div>
-      <div class="prog-bar-wrap">
-        <div class="prog-bar" id="pbar"></div>
-      </div>
-      <div class="prog-meta">
-        <span id="ppct">0%</span>
-        <span></span>
-      </div>
-      <div id="log"></div>
     </div>
 
   </main>

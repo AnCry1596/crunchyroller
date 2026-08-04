@@ -95,17 +95,31 @@ main {
   gap: 24px;
 }
 
-/* cards */
+/* shell — one big outline wrapping everything */
+.shell {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  box-shadow: 0 0 20px rgba(255, 255, 255, 0.03),
+              0 0 60px rgba(255, 255, 255, 0.015);
+  overflow: hidden;
+}
+
+/* cards sit inside the shell, separated by borders */
 .card {
   background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
   padding: 22px;
-  transition: border-color 0.3s;
+  transition: background 0.3s;
+}
+
+.card:first-child {
+  border-top: none;
 }
 
 .card:hover {
-  border-color: var(--border-hover);
+  background: rgba(255, 255, 255, 0.015);
 }
 
 .card-label {
