@@ -3,16 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Crunchyroller</title>
+  <title>crunchyroller</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
 
-  <!-- header banner -->
   <header>
-    <div class="logo">🌀</div>
     <h1>crunchy<b>roller</b></h1>
     <div class="badge" id="badge">
       <div class="dot"></div>
@@ -20,34 +18,31 @@
     </div>
   </header>
 
-  <!-- main app wrapper -->
   <main>
 
-    <!-- session & login card -->
-    <div class="card" id="auth-card">
+    <div class="card">
       <div class="card-label">session</div>
       <div class="field">
-        <label>etp_rt cookie</label>
+        <label>session token</label>
         <div class="row">
-          <input type="password" id="tok" placeholder="paste your token here…">
-          <button class="btn-o btn-s" onclick="saveToken()">save</button>
+          <input type="password" id="tok" placeholder="etp_rt cookie value">
+          <button class="btn-s" onclick="saveToken()">save</button>
         </div>
       </div>
-      <div class="grid2" style="margin-top:10px">
-        <button class="btn" onclick="detect()">⚡ auto-detect</button>
-        <button class="btn-o" onclick="webviewLogin()">🌐 in-app browser login</button>
+      <div class="grid2" style="margin-top:12px">
+        <button onclick="detect()">auto-detect</button>
+        <button onclick="webviewLogin()">browser login</button>
       </div>
       <p class="hint">
-        click <strong>in-app browser login</strong> to log in via an embedded window, or <strong>auto-detect</strong> if already logged in in Chrome/Firefox/Edge.
+        log into <strong>crunchyroll.com</strong> first, then click auto-detect. or use browser login to sign in here.
       </p>
     </div>
 
-    <!-- download quality & language settings -->
     <div class="card">
-      <div class="card-label">settings</div>
+      <div class="card-label">quality</div>
       <div class="grid2">
         <div class="field">
-          <label>video quality</label>
+          <label>video</label>
           <select id="vq" onchange="saveCfg()">
             <option value="1080p">1080p</option>
             <option value="720p">720p</option>
@@ -57,7 +52,7 @@
           </select>
         </div>
         <div class="field">
-          <label>audio quality</label>
+          <label>audio</label>
           <select id="aq" onchange="saveCfg()">
             <option value="192k">192k</option>
             <option value="96k">96k</option>
@@ -70,10 +65,9 @@
             <option value="en-US">English</option>
             <option value="de-DE">German</option>
             <option value="fr-FR">French</option>
-            <option value="es-419">Spanish (Latin)</option>
-            <option value="pt-BR">Portuguese (BR)</option>
+            <option value="es-419">Spanish</option>
+            <option value="pt-BR">Portuguese</option>
             <option value="ko-KR">Korean</option>
-            <option value="zh-CN">Chinese (CN)</option>
           </select>
         </div>
         <div class="field">
@@ -82,8 +76,8 @@
             <option value="en-US">English</option>
             <option value="de-DE">German</option>
             <option value="fr-FR">French</option>
-            <option value="es-419">Spanish (Latin)</option>
-            <option value="pt-BR">Portuguese (BR)</option>
+            <option value="es-419">Spanish</option>
+            <option value="pt-BR">Portuguese</option>
             <option value="ru-RU">Russian</option>
             <option value="ar-SA">Arabic</option>
           </select>
@@ -91,34 +85,31 @@
       </div>
     </div>
 
-    <!-- url fetcher & episode selector -->
     <div class="card">
-      <div class="card-label">content</div>
+      <div class="card-label">download</div>
       <div class="row">
-        <input type="text" id="url" placeholder="crunchyroll.com/series/… or /watch/…">
-        <button class="btn" id="fetch-btn" onclick="fetchUrl()">fetch</button>
+        <input type="text" id="url" placeholder="paste a crunchyroll url">
+        <button id="fetch-btn" onclick="fetchUrl()">fetch</button>
       </div>
 
-      <!-- episode tree container -->
       <div id="tree">
         <hr class="div">
         <div class="ser-title" id="ser-title"></div>
         <div id="sn-list"></div>
         <hr class="div">
         <div class="row" style="justify-content:flex-end">
-          <button class="btn-o btn-s" onclick="pickAll(true)">all</button>
-          <button class="btn-o btn-s" onclick="pickAll(false)">none</button>
-          <button class="btn" onclick="startDl()">download selected</button>
+          <button class="btn-s" onclick="pickAll(true)">all</button>
+          <button class="btn-s" onclick="pickAll(false)">none</button>
+          <button onclick="startDl()">download</button>
         </div>
       </div>
     </div>
 
-    <!-- download progress dashboard -->
     <div class="card" id="dl-panel">
       <div class="card-label">progress</div>
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <span id="pill" class="pill pill-run"><span class="spin"></span>downloading</span>
-        <span id="cur-ep" style="font-size:.8rem;color:var(--text2)"></span>
+        <span id="pill" class="pill pill-run"><span class="spin"></span> downloading</span>
+        <span id="cur-ep" style="font-size:.75rem;color:var(--dim)"></span>
       </div>
       <div class="prog-bar-wrap">
         <div class="prog-bar" id="pbar"></div>
@@ -132,9 +123,7 @@
 
   </main>
 
-  <!-- toast notifications -->
   <div id="toast"></div>
-
   <script src="/js/app.js"></script>
 </body>
 </html>
