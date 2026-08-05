@@ -111,7 +111,8 @@ python main.py --etp-rt "YOUR_ETP_RT_TOKEN" --file urls.txt
 
 # Screenshots
 
-<img width="1823" height="960" alt="Screenshot 2026-08-04 041853" src="https://github.com/user-attachments/assets/1812cb7c-cb0d-4076-b247-959cda9ebabc" />
+<img width="1816" height="980" alt="Screenshot 2026-08-05 023310" src="https://github.com/user-attachments/assets/e064a2ad-f2c8-40d8-93a6-f32b9a72cb24" />
+
 
 
 ---
