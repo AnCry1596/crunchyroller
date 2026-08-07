@@ -8,6 +8,12 @@ config.json
 ffmpeg.exe
 ffmpeg
 
+# Build Artifacts & Packaging
+build/
+dist/
+*.spec
+android/
+
 # Python Cache & Environment
 __pycache__/
 *.pyc

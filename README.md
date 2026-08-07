@@ -1,130 +1,124 @@
-# Crunchyroller
+<div align="center">
 
-A Crunchyroll downloader.
+# 🎬 Crunchyroller
 
-Downloads single episodes, entire seasons, or complete series, decrypts Widevine streams, grabs multiple audio/subtitle tracks, and packs everything into clean MKV files.
+**Production-ready Desktop App & CLI to download Crunchyroll anime in full quality.**  
+Multi-threaded DASH downloads, multiple audio & subtitle tracks, Widevine DRM decryption, and auto-muxing to MKV.
 
----
+[![Release](https://img.shields.io/github/v/release/Vure-sh/crunchyroller?color=black&style=for-the-badge)](https://github.com/Vure-sh/crunchyroller/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2064--bit-black?style=for-the-badge&logo=windows)](https://github.com/Vure-sh/crunchyroller/releases/latest)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-black?style=for-the-badge&logo=python)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-black?style=for-the-badge)](LICENSE)
 
-# Features
-
-* 📺 Download a single episode, an entire season, or a whole series.
-* 🎬 Pick your video quality (1080p → 240p) and audio bitrate.
-* 🚀 Multi-threaded DASH downloader so you're not waiting forever.
-* 🌐 Multiple audio and subtitle tracks bundled into one MKV.
-* 🍪 Browser session support (eventually).
-* ⚙️ CLI if terminals are more your thing.
-
-> **⚠️ Browser Session Auto-Detection**
->
-> It's still under development and currently doesn't work. You'll have to provide your `etp_rt` cookie manually for now, and the "in-app browser login" option is still unstable
+[**📥 Download Latest Executable (.zip)**](https://github.com/Vure-sh/crunchyroller/releases/latest) • [**✨ Features**](#-features) • [**🔑 Widevine Setup**](#-widevine-keys-required) • [**⚙️ Developer Setup**](#-developer-setup)
 
 ---
 
-# Installation
+<img width="1816" alt="Crunchyroller Interface" src="https://github.com/user-attachments/assets/e064a2ad-f2c8-40d8-93a6-f32b9a72cb24" />
 
-Clone the repository and install the dependencies:
+</div>
 
+---
+
+## ✨ Features
+
+- 🖥️ **Native Desktop App**: Built-in minimalist glassmorphism interface powered by PyWebView. No terminal required.
+- ⚡ **Multi-Threaded DASH Downloader**: Ultra-fast segmented downloads for episodes, full seasons, or complete series.
+- 🔊 **Multi-Audio & Multi-Subtitles**: Choose any combination of dubs (Japanese, English, Latin Spanish, French, German, etc.) and soft subtitles.
+- 🔑 **Widevine DRM Decryption**: Seamlessly decrypts CENC encrypted streams using your Widevine device keys (`.wvd` or `.bin` / `.pem`).
+- 🌐 **In-App Browser Session Capturer**: Automatically captures your `etp_rt` session cookie via built-in web login or auto-detects browser cookies.
+- 🎬 **FFmpeg Auto-Muxing**: Packs video, audio tracks, subtitles, fonts, and metadata directly into a single, clean `.mkv` file.
+- 💻 **CLI Mode Available**: Prefer the terminal? Full command-line interface with batch file downloading support.
+
+---
+
+## 🚀 Quick Start (Portable Executable)
+
+No Python installation required!
+
+1. Download the latest **[`crunchyroller-v1.1.1-win64.zip`](https://github.com/Vure-sh/crunchyroller/releases/latest)** from Releases.
+2. Extract the ZIP folder.
+3. Place your **Widevine keys** (see below) inside the extracted `crunchyroller/` folder next to `crunchyroller.exe`.
+4. Double-click `crunchyroller.exe` to launch!
+
+---
+
+## 🔑 Widevine Keys (Required)
+
+Crunchyroll encrypts its video streams using Widevine DRM. To decrypt and save videos, you must provide your own Widevine device key.
+
+Place **ONE** of the following inside your app folder next to `crunchyroller.exe` (or in the project root if running from source):
+
+* **Option A**: A `*.wvd` file (easiest)
+* **Option B**: `client_id.bin` AND `private_key.pem`
+
+> ⚠️ *Note: Widevine device keys cannot be distributed with this project for legal reasons. Search for "ready to use CDMs" or check Android Studio tools if you need to generate your own.*
+
+---
+
+## ⚙️ Developer Setup (Run from Source)
+
+### 1. Prerequisites
+* Python 3.10+
+* [FFmpeg](https://ffmpeg.org/) (ensure `ffmpeg.exe` is in your system `PATH` or placed in the project root).
+
+### 2. Installation
 ```bash
+# Clone the repository
+git clone https://github.com/Vure-sh/crunchyroller.git
+cd crunchyroller
+
+# Install Python dependencies
 pip install -r requirements.txt
 ```
 
----
-
-# Things You'll Need
-
-## FFmpeg
-
-If the download finishes but the final video refuses to exist, chances are FFmpeg is missing.
-
-Either:
-
-* Install `ffmpeg` and make sure it's in your system's PATH, or
-* Throw `ffmpeg.exe` into the project's root folder.
-
-One of those two is enough.
-
----
-
-## Widevine
-
-You'll also need valid Widevine CDM device files.
-
-Supported formats:
-
-* `client_id.bin` + `private_key.pem`
-* `.wvd`
-
-Drop them into the project's root directory.
-
-I can't help you obtain these files or explain how to generate them.
-
-Google is your friend.
-
-Searching around Android Studio is a decent place to start.
-
-If you're stuck setting up the project itself (not getting the keys), feel free to DM me on Discord:
-
-**`.vure`**
-
----
-
-# Usage
-
-## Web UI
-
+### 3. Launching
 ```bash
+# Launch Native Desktop App
 python main.py --gui
-```
 
-Then open:
+# Download a single episode via CLI
+python main.py --etp-rt "YOUR_ETP_RT" --url "https://www.crunchyroll.com/watch/..." --video-quality 1080p
 
-```text
-http://localhost:8000
-```
+# Download an entire season
+python main.py --etp-rt "YOUR_ETP_RT" --url "https://www.crunchyroll.com/series/..." --season 1
 
----
-
-## Download an Entire Series
-
-```bash
-python main.py --etp-rt "YOUR_ETP_RT_TOKEN" --url "https://www.crunchyroll.com/series/..." --season 1
+# Batch download URLs from a file
+python main.py --etp-rt "YOUR_ETP_RT" --file urls.txt
 ```
 
 ---
 
-## Download a Single Episode
+## 📁 Repository Structure
 
-```bash
-python main.py --etp-rt "YOUR_ETP_RT_TOKEN" --url "https://www.crunchyroll.com/watch/..." --video-quality 1080p
+```
+crunchyroller/
+├── crunchyroll/             # Core Downloader & API Logic
+│   ├── api.py               # Crunchyroll API parser (Series, Seasons, Episodes)
+│   ├── auth.py              # Auth handler & cookie capturer
+│   ├── downloader.py        # Multi-threaded DASH downloader
+│   ├── drm.py               # PyWidevine license exchange & decryption
+│   ├── merger.py            # FFmpeg mkvmerge multiplexer
+│   └── mpd.py               # DASH manifest XML parser
+├── web/                     # Minimalist B&W Glassmorphism Web UI
+│   ├── index.html
+│   ├── css/
+│   └── js/
+├── main.py                  # CLI & App entry point
+├── web_gui.py               # PyWebView window & HTTP REST API handler
+├── build_exe.py             # PyInstaller standalone executable builder
+└── requirements.txt
 ```
 
 ---
 
-## Download URLs From a File
+## 💬 Community & Support
 
-```bash
-python main.py --etp-rt "YOUR_ETP_RT_TOKEN" --file urls.txt
-```
-
----
-
-# Screenshots
-
-<img width="1816" height="980" alt="Screenshot 2026-08-05 023310" src="https://github.com/user-attachments/assets/e064a2ad-f2c8-40d8-93a6-f32b9a72cb24" />
-
-
+* If you encounter an issue or have a feature request, please open an [**Issue**](https://github.com/Vure-sh/crunchyroller/issues).
+* For setup questions, reach out on Discord: **`.vure`**
 
 ---
 
-# Disclaimer
+## ⚠️ Disclaimer
 
-This project is intended for educational purposes and personal backups.
-
-Please don't be the reason lawyers have another meeting.
-
----
-
-If you find a bug, there's a decent chance I already know about it.
-
-If you find a weird bug... please open an issue because now I'm curious.
+This project is intended strictly for personal backups and educational purposes. Downloading copyrighted content may violate Crunchyroll's Terms of Service. The maintainers take no responsibility for misuse of this software.

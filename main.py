@@ -5,13 +5,87 @@ from typing import List
 
 # force utf-8 on windows
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from crunchyroll.api import get_episode_info, get_season_episodes, get_seasons, parse_url_type
 from crunchyroll.auth import load_config, save_config
 from crunchyroll.downloader import download_episode, download_season, download_series
 from crunchyroll.http_client import CrunchyrollHttpClient
+
+
+def ensure_webview2() -> None:
+    """check if WebView2 is installed, and auto-install it if not"""
+    if sys.platform != "win32":
+        return
+
+    import winreg
+
+    def is_installed() -> bool:
+        # check both HKLM and HKCU, 64-bit and 32-bit registry hives
+        keys = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+            (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+        ]
+        for hive, path in keys:
+            try:
+                k = winreg.OpenKey(hive, path)
+                val, _ = winreg.QueryValueEx(k, "pv")
+                winreg.CloseKey(k)
+                if val and val != "0.0.0.0":
+                    return True
+            except Exception:
+                pass
+        return False
+
+    if is_installed():
+        return
+
+    # not installed — download the evergreen bootstrapper and run it silently
+    import ctypes
+    import tempfile
+    import urllib.request
+    import subprocess
+
+    answer = ctypes.windll.user32.MessageBoxW(
+        0,
+        "crunchyroller needs Microsoft Edge WebView2 to run.\n\n"
+        "It's a small ~2MB install from Microsoft. Install it now?",
+        "Install Required Component",
+        0x04 | 0x20  # MB_YESNO | MB_ICONQUESTION
+    )
+    if answer != 6:  # IDYES
+        return
+
+    bootstrapper_url = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+    tmp = os.path.join(tempfile.gettempdir(), "MicrosoftEdgeWebview2Setup.exe")
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "Downloading WebView2 installer...\n\nClick OK and wait a moment.",
+            "Downloading",
+            0x40  # MB_ICONINFORMATION
+        )
+        urllib.request.urlretrieve(bootstrapper_url, tmp)
+        subprocess.run([tmp, "/silent", "/install"], check=True)
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "WebView2 installed successfully! Launching crunchyroller now.",
+            "Done",
+            0x40
+        )
+    except Exception as e:
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            f"Auto-install failed: {e}\n\n"
+            "Please install manually from:\n"
+            "https://developer.microsoft.com/microsoft-edge/webview2/",
+            "Install Failed",
+            0x10  # MB_ICONERROR
+        )
 
 
 def parse_langs(s: str) -> List[str]:
@@ -80,7 +154,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Downloads anime from Crunchyroll and outputs them in an MKV file."
     )
-    parser.add_argument("--gui", action="store_true", help="Launch Web GUI server in browser")
+    parser.add_argument("--gui", action="store_true", help="Launch native desktop GUI app")
+    parser.add_argument("--browser", action="store_true", help="Force opening GUI in default web browser instead of native app window")
     parser.add_argument("--email", type=str, default="", help="User email address")
     parser.add_argument("--password", type=str, default="", help="User password")
     parser.add_argument("--url", type=str, default="", help="URL of the episode/season/series to download")
@@ -123,8 +198,9 @@ def main() -> None:
 
     # launch gui if asked or if we have no inputs
     if args.gui or len(sys.argv) == 1 or (not args.url and not args.file and not args.etp_rt and not args.email):
-        from web_gui import start_server
-        start_server(port=8000, open_browser=True)
+        ensure_webview2()
+        from web_gui import start_gui
+        start_gui(port=8000, use_browser=args.browser)
         return
 
     from crunchyroll.auth import auto_detect_etp_rt, load_config, save_config

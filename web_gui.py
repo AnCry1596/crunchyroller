@@ -244,12 +244,59 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
 
 
-def start_server(port=8000, open_browser=True):
-    srv = http.server.HTTPServer(("", port), Handler)
-    print(f"crunchyroller → http://localhost:{port}")
-    if open_browser:
-        threading.Timer(0.5, lambda: webbrowser.open(f"http://localhost:{port}")).start()
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        print("\nstopped.")
+def start_gui(port=8000, use_browser=False):
+    """launch crunchyroller inside a native desktop pywebview window (or default browser)"""
+    srv = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    server_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    server_thread.start()
+
+    url = f"http://127.0.0.1:{port}"
+    print(f"crunchyroller running on {url}")
+
+    if use_browser:
+        webbrowser.open(url)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nstopped.")
+    else:
+        try:
+            import webview
+            webview.create_window(
+                "crunchyroller",
+                url=url,
+                width=860,
+                height=760,
+                min_size=(640, 520),
+                background_color="#000000",
+            )
+            webview.start()
+        except Exception as e:
+            err = str(e).lower()
+            # WebView2 not installed — show a dialog so the user knows what to do
+            if "webview2" in err or "edge" in err or "clsid" in err or "cocreateinstance" in err or True:
+                try:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(
+                        0,
+                        "The app needs Microsoft Edge WebView2 to run as a native window.\n\n"
+                        "Download it from:\nhttps://developer.microsoft.com/microsoft-edge/webview2/\n\n"
+                        "Opening in your browser for now as a fallback.",
+                        "WebView2 Required",
+                        0x40  # MB_ICONINFORMATION
+                    )
+                except Exception:
+                    pass
+            print(f"native window failed ({e}), opening in browser...")
+            webbrowser.open(url)
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print("\nstopped.")
+
+
+def start_server(port=8000, open_browser=False):
+    start_gui(port=port, use_browser=open_browser)
+

@@ -217,72 +217,81 @@ def save_config(config_dict: Dict[str, Any], config_path: str = CONFIG_FILE) -> 
 
 def open_webview_login() -> Optional[str]:
     """
-    Opens an in-app browser window navigating to crunchyroll.com/login.
-    Captures etp_rt upon successful user login.
+    open a browser window to crunchyroll.com/login and grab the etp_rt cookie
+    when the user logs in. works both standalone and inside a running pywebview app.
     """
-    import sys
-    import subprocess
+    import threading
     import time
 
-    script = """
-import time, threading, http.cookies
-import webview
-
-captured = {"token": None}
-
-def check(w):
-    while not captured["token"]:
-        time.sleep(0.5)
-        try:
-            cookies = w.get_cookies()
-            if cookies:
-                for c in cookies:
-                    if hasattr(c, 'items'):
-                        for k, m in c.items():
-                            if k == 'etp_rt' and m.value:
-                                captured["token"] = m.value
-                                print(f"CAPTURED_TOKEN:{m.value}", flush=True)
-                                w.destroy()
-                                return
-        except Exception:
-            pass
-
-w = webview.create_window('Crunchyroll Login', 'https://www.crunchyroll.com/login', width=960, height=720)
-t = threading.Thread(target=check, args=(w,), daemon=True)
-t.start()
-webview.start()
-"""
     try:
-        proc = subprocess.Popen(
-            [sys.executable, "-c", script],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+        import webview
+    except ImportError:
+        print("pywebview not installed, falling back to auto-detect")
+        return auto_detect_etp_rt()
+
+    captured = {"token": None, "done": False}
+
+    def poll_cookies(window):
+        """keep checking for the etp_rt cookie until we find it or the window closes"""
+        # give the page a sec to load before we start hammering it
+        time.sleep(2)
+        while not captured["done"]:
+            time.sleep(1)
+            try:
+                cookies = window.get_cookies()
+                if cookies:
+                    for c in cookies:
+                        if hasattr(c, 'items'):
+                            for k, m in c.items():
+                                if k == 'etp_rt' and m.value:
+                                    captured["token"] = m.value
+                                    captured["done"] = True
+                                    try:
+                                        window.destroy()
+                                    except Exception:
+                                        pass
+                                    return
+            except Exception:
+                # window probably closed
+                captured["done"] = True
+                return
+
+    # check if webview event loop is already running (e.g. we're inside the desktop app)
+    already_running = len(webview.windows) > 0
+
+    try:
+        w = webview.create_window(
+            'Crunchyroll Login',
+            'https://www.crunchyroll.com/login',
+            width=960,
+            height=720,
         )
 
-        token = None
-        start_time = time.time()
-        while time.time() - start_time < 300:
-            if proc.poll() is not None:
-                break
-            line = proc.stdout.readline()
-            if line and "CAPTURED_TOKEN:" in line:
-                token = line.split("CAPTURED_TOKEN:")[1].strip()
-                break
-            time.sleep(0.2)
+        # start polling right away on a background thread
+        poller = threading.Thread(target=poll_cookies, args=(w,), daemon=True)
+        poller.start()
 
-        if proc.poll() is None:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+        if already_running:
+            # event loop is already going, just wait for the login window to close
+            while not captured["done"]:
+                time.sleep(0.5)
+        else:
+            # no event loop yet, we need to start one (blocks until all windows close)
+            webview.start()
 
-        if not token:
-            token = auto_detect_etp_rt()
+        # give the poller a moment to finish up
+        poller.join(timeout=2)
 
-        return token
-    except Exception as e:
-        print(f"Error launching webview login: {e}")
+        if captured["token"]:
+            return captured["token"]
+
+        # didn't capture from cookies, try browser cookie jars as backup
         return auto_detect_etp_rt()
+
+    except Exception as e:
+        print(f"webview login failed ({e}), trying auto-detect...")
+        return auto_detect_etp_rt()
+
+
 
 
