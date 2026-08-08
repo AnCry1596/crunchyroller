@@ -69,8 +69,11 @@ def sanitize_filename(s: str) -> str:
     if not s:
         return "Unknown"
 
+    # replace unicode dashes and quotes with clean ascii equivalents
+    s = s.replace("—", "-").replace("–", "-").replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
+
     # swap illegal chars with underscores
-    res = re.sub(r'[\\/:*?"<>|\'"`“”’]', "_", s)
+    res = re.sub(r'[\\/:*?"<>|\'"`]', "_", s)
     # shrink multiple underscores into one
     res = re.sub(r"_{2,}", "_", res)
 
