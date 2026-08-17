@@ -1,7 +1,7 @@
 """
 crunchyroller discord bot — remote control for the downloader from your phone.
 reuses the same download pipeline as web_gui.py, with organized episode selection,
-strict chronological ordering, and live Discord status updates.
+strict chronological ordering, live Discord status updates, and real-time auto-updating /status dashboard.
 """
 
 import asyncio
@@ -36,6 +36,12 @@ class DownloadState:
         self.progress = 0.0
         self.episode = ""
         self.error = ""
+        self.current_seg = 0
+        self.total_segs = 0
+        self.speed = "0.0 MB/s"
+        self.vq = ""
+        self.aq = ""
+        self.start_time = 0.0
         self.cancel_flag = False
         self.queue: deque = deque()  # list of dicts with episode info & channel_id
         self.log: list = []
@@ -52,6 +58,10 @@ class DownloadState:
             self.progress = 0.0
             self.episode = ""
             self.error = ""
+            self.current_seg = 0
+            self.total_segs = 0
+            self.speed = "0.0 MB/s"
+            self.start_time = 0.0
             self.cancel_flag = False
 
 
@@ -75,6 +85,141 @@ def notify_discord(channel_id: Optional[int], text: str):
     """safely dispatch a message to a discord channel from the worker thread"""
     if channel_id and bot.is_ready() and bot.loop and not bot.is_closed():
         asyncio.run_coroutine_threadsafe(_async_send_msg(channel_id, text), bot.loop)
+
+
+# ── progress bar & embed builder ─────────────────────────────────────────────
+
+def make_progress_bar(percent: float, length: int = 14) -> str:
+    """generates a sleek modern progress bar string"""
+    filled = int(round(length * (percent / 100.0)))
+    filled = max(0, min(length, filled))
+    unfilled = length - filled
+    return f"`[{'▰' * filled}{'▱' * unfilled}]` **{percent:.1f}%**"
+
+
+def build_status_embed() -> discord.Embed:
+    """builds an aesthetic, real-time status embed card"""
+    with STATE.lock:
+        status = STATE.status
+        progress = STATE.progress
+        episode = STATE.episode
+        error = STATE.error
+        cur_seg = STATE.current_seg
+        tot_seg = STATE.total_segs
+        speed = STATE.speed
+        vq = STATE.vq
+        aq = STATE.aq
+        elapsed = int(time.time() - STATE.start_time) if (STATE.start_time > 0 and status == "running") else 0
+        q = list(STATE.queue)
+        recent_log = list(STATE.log[-4:])
+
+    if status == "running":
+        embed = discord.Embed(
+            title="⚡ Live Download Progress",
+            description=f"📺 **{episode}**\n\n{make_progress_bar(progress)}",
+            color=0x5865F2,
+        )
+        if tot_seg > 0:
+            embed.add_field(name="📦 Segments", value=f"`{cur_seg} / {tot_seg}`", inline=True)
+        if speed and speed != "0.0 MB/s":
+            embed.add_field(name="🚀 Speed", value=f"`{speed}`", inline=True)
+        if elapsed > 0:
+            mins, secs = divmod(elapsed, 60)
+            time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+            embed.add_field(name="⏱️ Elapsed", value=f"`{time_str}`", inline=True)
+        if vq and aq:
+            embed.add_field(name="⚙️ Quality", value=f"`{vq} / {aq}`", inline=True)
+        embed.add_field(name="📋 In Queue", value=f"`{len(q)}` episode(s) waiting", inline=True)
+
+        if recent_log:
+            embed.add_field(
+                name="📜 Recent Activity",
+                value="```" + "\n".join(recent_log) + "```",
+                inline=False,
+            )
+        embed.set_footer(text="🟢 Auto-updating live • Use buttons below to refresh or cancel")
+
+    elif status == "completed":
+        embed = discord.Embed(
+            title="✅ Download Finished",
+            description=f"📺 **{episode}**\n\n{make_progress_bar(100.0)}\n\n✨ File saved and muxed to MKV successfully!",
+            color=0x57F287,
+        )
+        embed.add_field(name="📋 Queue", value=f"`{len(q)}` episode(s) waiting", inline=True)
+        embed.set_footer(text="Crunchyroller Bot • Idle")
+
+    elif status == "failed":
+        embed = discord.Embed(
+            title="❌ Download Failed",
+            description=f"📺 **{episode}**\n\n> **Error:** `{error}`",
+            color=0xED4245,
+        )
+        embed.add_field(name="📋 Queue", value=f"`{len(q)}` episode(s) remaining", inline=True)
+        embed.set_footer(text="Crunchyroller Bot • Idle")
+
+    else:
+        embed = discord.Embed(
+            title="💤 Downloader Idle",
+            description=(
+                "No downloads currently in progress.\n\n"
+                "• Send **/download <url>** to start downloading.\n"
+                "• Or check queued episodes with **/queue**."
+            ),
+            color=0x2B2D31,
+        )
+        if q:
+            embed.add_field(
+                name="📋 Queued Up Next",
+                value=f"**{len(q)}** episode(s) waiting in queue",
+                inline=False,
+            )
+            next_items = [f"`{i+1}.` {item['label']}" for i, item in enumerate(q[:5])]
+            embed.add_field(
+                name="Next in line",
+                value="\n".join(next_items),
+                inline=False,
+            )
+        embed.set_footer(text="Crunchyroller Bot • Ready")
+
+    return embed
+
+
+class LiveStatusView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+        self.is_stopped = False
+
+    @discord.ui.button(label="🔄 Refresh", style=discord.ButtonStyle.secondary)
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=build_status_embed(), view=self)
+
+    @discord.ui.button(label="🛑 Cancel Download", style=discord.ButtonStyle.danger)
+    async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        with STATE.lock:
+            STATE.cancel_flag = True
+            STATE.queue.clear()
+            STATE.status = "idle"
+            STATE.episode = ""
+        self.is_stopped = True
+        await interaction.response.edit_message(
+            content="🛑 **Download cancelled and queue cleared.**",
+            embed=build_status_embed(),
+            view=None,
+        )
+
+    @discord.ui.button(label="📋 View Queue", style=discord.ButtonStyle.primary)
+    async def queue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        with STATE.lock:
+            q = list(STATE.queue)
+        if not q:
+            await interaction.response.send_message("📋 Queue is empty.", ephemeral=True)
+            return
+        lines = [f"📋 **Queued Episodes ({len(q)}):**"]
+        for i, item in enumerate(q[:15]):
+            lines.append(f"`{i+1}.` {item['label']}")
+        if len(q) > 15:
+            lines.append(f"*...and {len(q) - 15} more*")
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
 
 # ── download worker ──────────────────────────────────────────────────────────
@@ -119,6 +264,12 @@ def _worker_loop(etp_rt: str):
             STATE.status = "running"
             STATE.progress = 0.0
             STATE.episode = label
+            STATE.current_seg = 0
+            STATE.total_segs = 0
+            STATE.speed = "0.0 MB/s"
+            STATE.vq = vq
+            STATE.aq = aq
+            STATE.start_time = time.time()
             STATE.error = ""
 
         STATE._log(f"downloading: {label}")
@@ -130,8 +281,11 @@ def _worker_loop(etp_rt: str):
 
             def _cb(title, cur, tot, speed, status):
                 with STATE.lock:
+                    STATE.current_seg = cur
+                    STATE.total_segs = tot
+                    STATE.speed = speed
                     STATE.progress = round((cur / tot) * 100, 1) if tot > 0 else 0
-                    STATE.episode = f"{label} ({cur}/{tot})"
+                    STATE.episode = label
 
             output_file = download_episode(
                 client=client,
@@ -645,33 +799,32 @@ async def cmd_download(interaction: discord.Interaction, url: str):
         await interaction.followup.send(f"❌ {e}")
 
 
-@tree.command(name="status", description="show current download progress")
+@tree.command(name="status", description="show real-time live updating download dashboard")
 async def cmd_status(interaction: discord.Interaction):
-    with STATE.lock:
-        status = STATE.status
-        progress = STATE.progress
-        episode = STATE.episode
-        error = STATE.error
-        recent_log = list(STATE.log[-5:])
+    """sends an aesthetic status dashboard that auto-refreshes in real-time"""
+    view = LiveStatusView()
+    embed = build_status_embed()
+    await interaction.response.send_message(embed=embed, view=view)
 
-    if status == "idle":
-        msg = "💤 idle — nothing downloading"
-    elif status == "running":
-        bar_len = 12
-        filled = int(bar_len * progress / 100)
-        bar = "█" * filled + "░" * (bar_len - filled)
-        msg = f"⏳ **downloading**\n`{bar}` {progress:.1f}%\n📺 {episode}"
-    elif status == "completed":
-        msg = f"✅ **download complete**\n📺 {episode}"
-    elif status == "failed":
-        msg = f"❌ **download failed**\n📺 {episode}\n```{error}```"
-    else:
-        msg = f"status: {status}"
-
-    if recent_log:
-        msg += "\n\n**recent log:**\n" + "\n".join(f"`{l}`" for l in recent_log)
-
-    await interaction.response.send_message(msg, ephemeral=True)
+    # Live auto-update loop (runs for up to 2.5 minutes while downloading)
+    for _ in range(60):
+        await asyncio.sleep(2.5)
+        if view.is_stopped:
+            break
+        with STATE.lock:
+            is_running = (STATE.status == "running")
+        try:
+            updated_embed = build_status_embed()
+            await interaction.edit_original_response(embed=updated_embed, view=view)
+        except Exception:
+            break
+        if not is_running:
+            await asyncio.sleep(1)
+            try:
+                await interaction.edit_original_response(embed=build_status_embed(), view=view)
+            except Exception:
+                pass
+            break
 
 
 @tree.command(name="queue", description="show queued downloads")
