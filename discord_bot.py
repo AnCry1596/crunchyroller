@@ -6,6 +6,8 @@ strict chronological ordering, live Discord status updates, and real-time auto-u
 
 import asyncio
 import os
+import socket
+import sys
 import threading
 import time
 from collections import deque
@@ -25,6 +27,21 @@ from crunchyroll.auth import load_config
 from crunchyroll.downloader import download_episode
 from crunchyroll.http_client import CrunchyrollHttpClient
 from crunchyroll.types import EpisodeInfo, EpisodeMetadata, Season, SeasonEpisode
+
+
+# ── single instance socket lock ──────────────────────────────────────────────
+
+_LOCK_SOCKET = None
+
+def acquire_instance_lock() -> bool:
+    """prevent multiple competing bot instances from running simultaneously"""
+    global _LOCK_SOCKET
+    try:
+        _LOCK_SOCKET = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _LOCK_SOCKET.bind(("127.0.0.1", 54321))
+        return True
+    except socket.error:
+        return False
 
 
 # ── state ────────────────────────────────────────────────────────────────────
@@ -691,19 +708,31 @@ async def on_ready():
     print(f"bot ready as {bot.user}")
 
 
+@tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    print(f"App command error: {error}")
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(f"❌ An error occurred: `{error}`", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ An error occurred: `{error}`", ephemeral=True)
+    except Exception:
+        pass
+
+
 @tree.command(name="download", description="submit a crunchyroll url to select and download episodes")
 @app_commands.describe(url="crunchyroll episode, season, or series url")
 async def cmd_download(interaction: discord.Interaction, url: str):
+    # IMMEDIATELY DEFER to prevent 3-second Discord interaction timeout
+    await interaction.response.defer(ephemeral=False)
+
     cfg = load_config()
     etp_rt = cfg.get("etp_rt", "")
     if not etp_rt:
-        await interaction.response.send_message(
-            "❌ no etp_rt token found in config.json. log in via the desktop app first.",
-            ephemeral=True,
+        await interaction.followup.send(
+            "❌ no etp_rt token found in config.json. log in via the desktop app first."
         )
         return
-
-    await interaction.response.defer(ephemeral=False)
 
     try:
         kind, cid = parse_url_type(url)
@@ -818,9 +847,10 @@ async def cmd_download(interaction: discord.Interaction, url: str):
 @tree.command(name="status", description="show real-time live updating download dashboard")
 async def cmd_status(interaction: discord.Interaction):
     """sends an aesthetic status dashboard that auto-refreshes in real-time"""
+    await interaction.response.defer(ephemeral=False)
     view = LiveStatusView()
     embed = build_status_embed()
-    await interaction.response.send_message(embed=embed, view=view)
+    msg = await interaction.followup.send(embed=embed, view=view)
 
     # Live auto-update loop (runs for up to 2.5 minutes while downloading)
     for _ in range(60):
@@ -845,6 +875,7 @@ async def cmd_status(interaction: discord.Interaction):
 
 @tree.command(name="queue", description="show queued downloads")
 async def cmd_queue(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
     with STATE.lock:
         status = STATE.status
         episode = STATE.episode
@@ -863,11 +894,12 @@ async def cmd_queue(interaction: discord.Interaction):
     elif not lines:
         lines.append("📋 queue is empty")
 
-    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+    await interaction.followup.send("\n".join(lines))
 
 
 @tree.command(name="cancel", description="cancel current download and clear queue")
 async def cmd_cancel(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
     with STATE.lock:
         was_running = STATE.status == "running"
         STATE.cancel_flag = True
@@ -876,9 +908,9 @@ async def cmd_cancel(interaction: discord.Interaction):
         STATE.episode = ""
 
     if was_running:
-        await interaction.response.send_message("🛑 cancelled current download and cleared queue")
+        await interaction.followup.send("🛑 cancelled current download and cleared queue")
     else:
-        await interaction.response.send_message("📋 queue cleared (nothing was running)")
+        await interaction.followup.send("📋 queue cleared (nothing was running)")
 
 
 # ── entry point ──────────────────────────────────────────────────────────────
@@ -902,6 +934,11 @@ def start_bot(token: Optional[str] = None):
     if not tk:
         print("error: set DISCORD_BOT_TOKEN in .env file or as environment variable")
         return
+
+    if not acquire_instance_lock():
+        print("⚠️ Another instance of discord_bot.py is already running on this machine! Exiting to prevent dual-instance conflict.")
+        sys.exit(0)
+
     bot.run(tk)
 
 
