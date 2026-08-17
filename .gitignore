@@ -3,6 +3,7 @@ client_id.bin
 private_key.pem
 *.wvd
 config.json
+.env
 
 # Binaries & Large Executables
 ffmpeg.exe
