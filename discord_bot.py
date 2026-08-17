@@ -343,11 +343,15 @@ def enqueue_episodes(items: List[dict], etp_rt: str):
 # ── range parser helper ──────────────────────────────────────────────────────
 
 def parse_episode_ranges(range_str: str, available_eps: List[SeasonEpisode]) -> List[SeasonEpisode]:
-    """parse expressions like '1-5, 8, 10-12' and return matching episodes in numerical order"""
+    """parse expressions like '1-5, 8, 10-12', 'all', '1, 3, 5' and return matching episodes strictly in numerical order"""
+    raw = range_str.strip().lower()
+    if raw in ("all", "*", "everything", "full"):
+        return list(available_eps)
+
     selected_set = set()
     ep_map = {ep.episode_number: ep for ep in available_eps}
 
-    parts = [p.strip() for p in range_str.split(",") if p.strip()]
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
     for part in parts:
         if "-" in part:
             sub = part.split("-")
@@ -374,23 +378,27 @@ def parse_episode_ranges(range_str: str, available_eps: List[SeasonEpisode]) -> 
 # ── interactive ui views ─────────────────────────────────────────────────────
 
 class CustomRangeModal(discord.ui.Modal, title="Select Episode Range"):
-    range_input = discord.ui.TextInput(
-        label="Episode Numbers or Ranges",
-        placeholder="e.g. 1-5, 8, 11-13",
-        required=True,
-        max_length=100,
-    )
-
     def __init__(self, picker_view: "EpisodePickerView"):
         super().__init__()
         self.picker_view = picker_view
+        eps = self.picker_view.current_episodes
+        min_ep = eps[0].episode_number if eps else 1
+        max_ep = eps[-1].episode_number if eps else len(eps)
+
+        self.range_input = discord.ui.TextInput(
+            label=f"Episode Range ({min_ep} - {max_ep} available)",
+            placeholder="e.g. 1-5, 8, 11-13  or  all",
+            required=True,
+            max_length=100,
+        )
+        self.add_item(self.range_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         raw = self.range_input.value.strip()
         eps = parse_episode_ranges(raw, self.picker_view.current_episodes)
         if not eps:
             await interaction.response.send_message(
-                f"❌ No matching episodes found for range `{raw}` in this season.",
+                f"❌ No matching episodes found for `{raw}` in this season.",
                 ephemeral=True,
             )
             return
@@ -402,6 +410,7 @@ class SingleEpisodeView(discord.ui.View):
         self,
         ep_id: str,
         label: str,
+        series_id: Optional[str],
         vq: str,
         aq: str,
         a_langs: List[str],
@@ -411,13 +420,14 @@ class SingleEpisodeView(discord.ui.View):
         super().__init__(timeout=300)
         self.ep_id = ep_id
         self.label = label
+        self.series_id = series_id
         self.vq = vq
         self.aq = aq
         self.a_langs = a_langs
         self.s_langs = s_langs
         self.etp_rt = etp_rt
 
-    @discord.ui.button(label="📥 Download Episode", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="📥 Download This Episode", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         item = {
             "ep_id": self.ep_id,
@@ -431,7 +441,7 @@ class SingleEpisodeView(discord.ui.View):
         enqueue_episodes([item], self.etp_rt)
         self.clear_items()
         await interaction.response.edit_message(
-            content=f"📥 **Added to queue:**\n`1.` {self.label} `[{self.vq}/{self.aq}]`",
+            content=f"📥 **Queued for download:**\n`1.` {self.label} `[{self.vq}/{self.aq}]`",
             embed=None,
             view=None,
         )
@@ -440,7 +450,7 @@ class SingleEpisodeView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.clear_items()
         await interaction.response.edit_message(
-            content="❌ Download cancelled.",
+            content="❌ Cancelled.",
             embed=None,
             view=None,
         )
@@ -514,7 +524,7 @@ class EpisodePickerView(discord.ui.View):
                 for ep in eps[:25]
             ]
             ep_select = discord.ui.Select(
-                placeholder="Check episodes to download...",
+                placeholder="Choose specific episode(s)...",
                 min_values=1,
                 max_values=len(ep_options),
                 options=ep_options,
@@ -524,6 +534,14 @@ class EpisodePickerView(discord.ui.View):
             self.add_item(ep_select)
 
         # 3. Action buttons
+        btn_range = discord.ui.Button(
+            label="🔢 Select Range (e.g. 1-5)",
+            style=discord.ButtonStyle.primary,
+            row=2,
+        )
+        btn_range.callback = self.on_custom_range
+        self.add_item(btn_range)
+
         btn_download_selected = discord.ui.Button(
             label="📥 Download Selected",
             style=discord.ButtonStyle.success,
@@ -533,20 +551,12 @@ class EpisodePickerView(discord.ui.View):
         self.add_item(btn_download_selected)
 
         btn_download_all = discord.ui.Button(
-            label="📦 Download All (Season)",
-            style=discord.ButtonStyle.primary,
+            label="📦 Download Full Season",
+            style=discord.ButtonStyle.secondary,
             row=2,
         )
         btn_download_all.callback = self.on_download_all
         self.add_item(btn_download_all)
-
-        btn_range = discord.ui.Button(
-            label="🔢 Custom Range",
-            style=discord.ButtonStyle.secondary,
-            row=2,
-        )
-        btn_range.callback = self.on_custom_range
-        self.add_item(btn_range)
 
         btn_cancel = discord.ui.Button(
             label="❌ Cancel",
@@ -559,13 +569,18 @@ class EpisodePickerView(discord.ui.View):
     def build_embed(self) -> discord.Embed:
         eps = self.current_episodes
         sn = self.current_season
+        min_ep = eps[0].episode_number if eps else 1
+        max_ep = eps[-1].episode_number if eps else len(eps)
+
         embed = discord.Embed(
             title=f"🎬 {self.series_title}",
             description=(
-                f"**Season {sn.season_number}** ({len(eps)} episodes available)\n"
+                f"**Season {sn.season_number}** • `{len(eps)} Episodes Available` (Episodes {min_ep} to {max_ep})\n"
                 f"Quality: `{self.vq}` / `{self.aq}`\n\n"
-                f"• Check specific episodes in the dropdown below\n"
-                f"• Or click **Download All (Season)** / **Custom Range**"
+                f"**How to pick:**\n"
+                f"• Tap **🔢 Select Range** to type ranges like `1-5` or `1, 3, 5`\n"
+                f"• Or choose specific episodes from the dropdown below\n"
+                f"• Or tap **📦 Download Full Season**"
             ),
             color=0x5865F2,
         )
@@ -573,8 +588,8 @@ class EpisodePickerView(discord.ui.View):
             # show in exact chronological order
             ordered_selected = [ep for ep in eps if ep.id in self.selected_ep_ids]
             embed.add_field(
-                name="Selected Episodes",
-                value=f"**{len(ordered_selected)}** episode(s) checked (E{', E'.join(str(e.episode_number) for e in ordered_selected[:10])})",
+                name="Checked from Dropdown",
+                value=f"**{len(ordered_selected)}** episode(s) (E{', E'.join(str(e.episode_number) for e in ordered_selected[:10])})",
                 inline=False,
             )
         return embed
@@ -593,7 +608,7 @@ class EpisodePickerView(discord.ui.View):
     async def on_download_selected(self, interaction: discord.Interaction):
         if not self.selected_ep_ids:
             await interaction.response.send_message(
-                "❌ Select at least one episode from the dropdown first!",
+                "❌ Select episodes from the dropdown first, or click **Select Range** to type numbers!",
                 ephemeral=True,
             )
             return
@@ -724,6 +739,7 @@ async def cmd_download(interaction: discord.Interaction, url: str):
             view = SingleEpisodeView(
                 ep_id=cid,
                 label=label,
+                series_id=None,
                 vq=vq,
                 aq=aq,
                 a_langs=a_langs,
