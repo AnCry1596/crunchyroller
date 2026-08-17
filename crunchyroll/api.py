@@ -144,7 +144,7 @@ def get_seasons(
                 title=item.get("title", ""),
             )
         )
-
+    seasons.sort(key=lambda s: (s.season_number if s.season_number > 0 else 999, s.title))
     return seasons
 
 
@@ -166,7 +166,7 @@ def get_season_episodes(
     items = data.get("data", [])
 
     episodes = []
-    for item in items:
+    for seq_idx, item in enumerate(items, start=1):
         ep_meta_raw = item.get("episode_metadata", {})
         versions_raw = ep_meta_raw.get("versions", [])
         versions = [
@@ -186,12 +186,12 @@ def get_season_episodes(
             else item.get("episode_number")
         )
         if ep_num_val is None:
-            ep_num_val = item.get("sequence_number", 0)
+            ep_num_val = item.get("sequence_number", seq_idx)
 
         try:
             ep_num = int(float(ep_num_val))
         except Exception:
-            ep_num = 0
+            ep_num = seq_idx
 
         season_num_val = (
             ep_meta_raw.get("season_number")
@@ -206,7 +206,7 @@ def get_season_episodes(
         episodes.append(
             SeasonEpisode(
                 id=item.get("id", ""),
-                title=item.get("title", ""),
+                title=item.get("title", f"Episode {ep_num}"),
                 season_number=season_num,
                 episode_number=ep_num,
                 series_title=ep_meta_raw.get("series_title", item.get("series_title", "")),
@@ -216,7 +216,7 @@ def get_season_episodes(
             )
         )
 
-
+    episodes.sort(key=lambda e: (e.season_number, e.episode_number if e.episode_number > 0 else 9999))
     return episodes
 
 

@@ -1,6 +1,7 @@
 """
 crunchyroller discord bot — remote control for the downloader from your phone.
-reuses the same download pipeline as web_gui.py, with interactive episode selection.
+reuses the same download pipeline as web_gui.py, with organized episode selection,
+strict chronological ordering, and live Discord status updates.
 """
 
 import asyncio
@@ -36,7 +37,7 @@ class DownloadState:
         self.episode = ""
         self.error = ""
         self.cancel_flag = False
-        self.queue: deque = deque()  # list of (ep_id, label, vq, aq, a_langs, s_langs)
+        self.queue: deque = deque()  # list of dicts with episode info & channel_id
         self.log: list = []
 
     def _log(self, msg: str):
@@ -57,27 +58,71 @@ class DownloadState:
 STATE = DownloadState()
 
 
+# ── discord notification helper ──────────────────────────────────────────────
+
+async def _async_send_msg(channel_id: int, text: str):
+    try:
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            channel = await bot.fetch_channel(channel_id)
+        if channel:
+            await channel.send(text)
+    except Exception as e:
+        print(f"Failed to send Discord message: {e}")
+
+
+def notify_discord(channel_id: Optional[int], text: str):
+    """safely dispatch a message to a discord channel from the worker thread"""
+    if channel_id and bot.is_ready() and bot.loop and not bot.is_closed():
+        asyncio.run_coroutine_threadsafe(_async_send_msg(channel_id, text), bot.loop)
+
+
 # ── download worker ──────────────────────────────────────────────────────────
 
 def _worker_loop(etp_rt: str):
-    """process queued items one by one in a background thread"""
+    """process queued items one by one in exact order"""
+    total_batch = 0
+    success_count = 0
+    fail_count = 0
+    last_channel_id = None
+
     while True:
         with STATE.lock:
+            if STATE.cancel_flag:
+                STATE.queue.clear()
+                STATE.status = "idle"
+                STATE.cancel_flag = False
+                return
+
             if not STATE.queue:
                 STATE.status = "idle"
+                if total_batch > 1 and last_channel_id:
+                    notify_discord(
+                        last_channel_id,
+                        f"🎉 **Batch Download Finished!** (`{success_count}` successful, `{fail_count}` failed)",
+                    )
                 return
+
             item = STATE.queue.popleft()
 
-        ep_id, label, vq, aq, a_langs, s_langs = item
+        total_batch += 1
+        ep_id = item["ep_id"]
+        label = item["label"]
+        vq = item["vq"]
+        aq = item["aq"]
+        a_langs = item["a_langs"]
+        s_langs = item["s_langs"]
+        channel_id = item.get("channel_id")
+        last_channel_id = channel_id
 
         with STATE.lock:
             STATE.status = "running"
             STATE.progress = 0.0
             STATE.episode = label
             STATE.error = ""
-            STATE.cancel_flag = False
 
         STATE._log(f"downloading: {label}")
+        notify_discord(channel_id, f"⏳ **Downloading:** `{label}` `[{vq}/{aq}]`")
 
         try:
             client = CrunchyrollHttpClient(etp_rt)
@@ -88,7 +133,7 @@ def _worker_loop(etp_rt: str):
                     STATE.progress = round((cur / tot) * 100, 1) if tot > 0 else 0
                     STATE.episode = f"{label} ({cur}/{tot})"
 
-            download_episode(
+            output_file = download_episode(
                 client=client,
                 base_content_id=ep_id,
                 info=info,
@@ -99,20 +144,38 @@ def _worker_loop(etp_rt: str):
                 progress_cb=_cb,
             )
 
-            with STATE.lock:
-                STATE.status = "completed"
-                STATE.progress = 100.0
-            STATE._log(f"done: {label}")
+            # verify the file actually exists on disk
+            if output_file and os.path.exists(output_file) and os.path.getsize(output_file) > 1024:
+                file_size_mb = os.path.getsize(output_file) / (1024 * 1024)
+                success_count += 1
+                with STATE.lock:
+                    STATE.status = "completed"
+                    STATE.progress = 100.0
+                STATE._log(f"done: {label} ({file_size_mb:.1f} MB)")
+                notify_discord(
+                    channel_id,
+                    f"✅ **Download Complete:** `{label}` `({file_size_mb:.1f} MB)`",
+                )
+            else:
+                raise RuntimeError(
+                    f"Download finished but output file was not found or is 0 bytes: {output_file}"
+                )
 
         except Exception as e:
+            fail_count += 1
+            err_msg = str(e)
             with STATE.lock:
                 STATE.status = "failed"
-                STATE.error = str(e)
-            STATE._log(f"failed: {label} — {e}")
+                STATE.error = err_msg
+            STATE._log(f"failed: {label} — {err_msg}")
+            notify_discord(
+                channel_id,
+                f"❌ **Download Failed:** `{label}`\n> **Error:** `{err_msg}`",
+            )
 
 
-def enqueue_episodes(items: List[tuple], etp_rt: str):
-    """add items to queue and start worker if not already running"""
+def enqueue_episodes(items: List[dict], etp_rt: str):
+    """add items to queue in exact sequence and start worker if needed"""
     with STATE.lock:
         for item in items:
             STATE.queue.append(item)
@@ -126,8 +189,8 @@ def enqueue_episodes(items: List[tuple], etp_rt: str):
 # ── range parser helper ──────────────────────────────────────────────────────
 
 def parse_episode_ranges(range_str: str, available_eps: List[SeasonEpisode]) -> List[SeasonEpisode]:
-    """parse expressions like '1-5, 8, 10-12' and return matching episodes"""
-    selected: List[SeasonEpisode] = []
+    """parse expressions like '1-5, 8, 10-12' and return matching episodes in numerical order"""
+    selected_set = set()
     ep_map = {ep.episode_number: ep for ep in available_eps}
 
     parts = [p.strip() for p in range_str.split(",") if p.strip()]
@@ -138,19 +201,20 @@ def parse_episode_ranges(range_str: str, available_eps: List[SeasonEpisode]) -> 
                 try:
                     start, end = int(sub[0].strip()), int(sub[1].strip())
                     for num in range(min(start, end), max(start, end) + 1):
-                        if num in ep_map and ep_map[num] not in selected:
-                            selected.append(ep_map[num])
+                        if num in ep_map:
+                            selected_set.add(num)
                 except ValueError:
                     pass
         else:
             try:
                 num = int(part)
-                if num in ep_map and ep_map[num] not in selected:
-                    selected.append(ep_map[num])
+                if num in ep_map:
+                    selected_set.add(num)
             except ValueError:
                 pass
 
-    return sorted(selected, key=lambda e: e.episode_number)
+    # return strictly preserving the order in available_eps
+    return [ep for ep in available_eps if ep.episode_number in selected_set]
 
 
 # ── interactive ui views ─────────────────────────────────────────────────────
@@ -201,10 +265,16 @@ class SingleEpisodeView(discord.ui.View):
 
     @discord.ui.button(label="📥 Download Episode", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        enqueue_episodes(
-            [(self.ep_id, self.label, self.vq, self.aq, self.a_langs, self.s_langs)],
-            self.etp_rt,
-        )
+        item = {
+            "ep_id": self.ep_id,
+            "label": self.label,
+            "vq": self.vq,
+            "aq": self.aq,
+            "a_langs": self.a_langs,
+            "s_langs": self.s_langs,
+            "channel_id": interaction.channel_id,
+        }
+        enqueue_episodes([item], self.etp_rt)
         self.clear_items()
         await interaction.response.edit_message(
             content=f"📥 **Added to queue:**\n`1.` {self.label} `[{self.vq}/{self.aq}]`",
@@ -259,7 +329,7 @@ class EpisodePickerView(discord.ui.View):
     def update_components(self):
         self.clear_items()
 
-        # 1. Season selector if multiple seasons
+        # 1. Season selector dropdown (if series has multiple seasons)
         if len(self.seasons) > 1:
             season_options = [
                 discord.SelectOption(
@@ -277,7 +347,7 @@ class EpisodePickerView(discord.ui.View):
             season_select.callback = self.on_season_change
             self.add_item(season_select)
 
-        # 2. Episode multi-select dropdown (up to 25)
+        # 2. Episode multi-select dropdown (up to 25 items in numerical order)
         eps = self.current_episodes
         if eps:
             ep_options = [
@@ -338,17 +408,19 @@ class EpisodePickerView(discord.ui.View):
         embed = discord.Embed(
             title=f"🎬 {self.series_title}",
             description=(
-                f"**Season {sn.season_number}** ({len(eps)} episodes)\n"
+                f"**Season {sn.season_number}** ({len(eps)} episodes available)\n"
                 f"Quality: `{self.vq}` / `{self.aq}`\n\n"
                 f"• Check specific episodes in the dropdown below\n"
-                f"• Or click **Download All** / **Custom Range**"
+                f"• Or click **Download All (Season)** / **Custom Range**"
             ),
             color=0x5865F2,
         )
         if self.selected_ep_ids:
+            # show in exact chronological order
+            ordered_selected = [ep for ep in eps if ep.id in self.selected_ep_ids]
             embed.add_field(
-                name="Selected",
-                value=f"**{len(self.selected_ep_ids)}** episode(s) checked",
+                name="Selected Episodes",
+                value=f"**{len(ordered_selected)}** episode(s) checked (E{', E'.join(str(e.episode_number) for e in ordered_selected[:10])})",
                 inline=False,
             )
         return embed
@@ -371,8 +443,8 @@ class EpisodePickerView(discord.ui.View):
                 ephemeral=True,
             )
             return
-        ep_map = {ep.id: ep for ep in self.current_episodes}
-        selected_eps = [ep_map[eid] for eid in self.selected_ep_ids if eid in ep_map]
+        # STRICT CHRONOLOGICAL ORDER: match order in current_episodes (E1, E2, E3...)
+        selected_eps = [ep for ep in self.current_episodes if ep.id in self.selected_ep_ids]
         await self.enqueue_and_finish(interaction, selected_eps)
 
     async def on_download_all(self, interaction: discord.Interaction):
@@ -401,15 +473,23 @@ class EpisodePickerView(discord.ui.View):
         queue_items = []
         for ep in episodes:
             lbl = f"{self.series_title} S{ep.season_number:02d}E{ep.episode_number:02d} — {ep.title}"
-            queue_items.append((ep.id, lbl, self.vq, self.aq, self.a_langs, self.s_langs))
+            queue_items.append({
+                "ep_id": ep.id,
+                "label": lbl,
+                "vq": self.vq,
+                "aq": self.aq,
+                "a_langs": self.a_langs,
+                "s_langs": self.s_langs,
+                "channel_id": interaction.channel_id,
+            })
 
         enqueue_episodes(queue_items, self.etp_rt)
 
         lines = [
-            f"📥 **Added {len(queue_items)} episode(s) to queue** `[{self.vq}/{self.aq}]`"
+            f"📥 **Queued {len(queue_items)} episode(s) in order** `[{self.vq}/{self.aq}]`:"
         ]
-        for i, (_, lbl, *_) in enumerate(queue_items[:10]):
-            lines.append(f"`{i+1}.` {lbl}")
+        for i, item in enumerate(queue_items[:10]):
+            lines.append(f"`{i+1}.` {item['label']}")
         if len(queue_items) > 10:
             lines.append(f"*...and {len(queue_items) - 10} more*")
 
@@ -499,22 +579,30 @@ async def cmd_download(interaction: discord.Interaction, url: str):
             await interaction.followup.send(embed=embed, view=view)
 
         elif kind == "series":
-            series = get_series(client, cid, a_langs[0], s_langs[0])
-            title = series.get("title", cid)
-            seasons = series.get("seasons", [])
-            all_eps = series.get("episodes", [])
+            series_meta = get_series(client, cid, a_langs[0], s_langs[0])
+            title = series_meta.get("title", cid)
+            seasons = series_meta.get("seasons", [])
 
-            if not seasons or not all_eps:
-                await interaction.followup.send("❌ No seasons or episodes found for this series.")
+            if not seasons:
+                await interaction.followup.send("❌ No seasons found for this series.")
                 return
 
             season_episodes_map: Dict[str, List[SeasonEpisode]] = {}
+            valid_seasons: List[Season] = []
+
             for s in seasons:
-                season_episodes_map[s.id] = [e for e in all_eps if e.season_number == s.season_number]
+                eps = get_season_episodes(client, s.id, a_langs[0], s_langs[0])
+                if eps:
+                    season_episodes_map[s.id] = eps
+                    valid_seasons.append(s)
+
+            if not valid_seasons:
+                await interaction.followup.send("❌ No playable episodes found in any season.")
+                return
 
             view = EpisodePickerView(
                 series_title=title,
-                seasons=seasons,
+                seasons=valid_seasons,
                 season_episodes_map=season_episodes_map,
                 vq=vq,
                 aq=aq,
@@ -595,12 +683,12 @@ async def cmd_queue(interaction: discord.Interaction):
 
     lines = []
     if status == "running":
-        lines.append(f"▶️ **now:** {episode}")
+        lines.append(f"▶️ **now downloading:** {episode}")
 
     if q:
-        lines.append(f"\n📋 **queued ({len(q)}):**")
-        for i, (_, lbl, *_) in enumerate(q[:15]):
-            lines.append(f"`{i+1}.` {lbl}")
+        lines.append(f"\n📋 **queued in order ({len(q)}):**")
+        for i, item in enumerate(q[:15]):
+            lines.append(f"`{i+1}.` {item['label']}")
         if len(q) > 15:
             lines.append(f"*...and {len(q) - 15} more*")
     elif not lines:

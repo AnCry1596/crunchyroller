@@ -14,7 +14,7 @@ from Crypto.Util import Counter
 from .api import delete_stream, get_episode, get_season_episodes, get_series
 from .drm import get_license
 from .http_client import CrunchyrollHttpClient
-from .merger import merge_everything
+from .merger import find_ffmpeg, merge_everything
 from .mpd import expand_timeline, get_base_url, get_pssh, parse_manifest
 from .types import (
     DubVersion,
@@ -91,7 +91,7 @@ def decrypt_mp4(parts: bytes, keys: Dict[bytes, bytes], output_filename: str) ->
         f.write(parts)
 
     key_hex = list(keys.values())[0].hex()
-    ffmpeg_bin = "ffmpeg.exe" if os.path.exists("ffmpeg.exe") else "ffmpeg"
+    ffmpeg_bin = find_ffmpeg()
     ffmpeg_cmd = [
         ffmpeg_bin,
         "-y",
@@ -104,7 +104,7 @@ def decrypt_mp4(parts: bytes, keys: Dict[bytes, bytes], output_filename: str) ->
         output_filename,
     ]
 
-    res = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+    res = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if os.path.exists(raw_tmp):
         try:
             os.remove(raw_tmp)
@@ -350,18 +350,30 @@ def download_parts(
                 speed_str = f"{speed:.2f} MB/s"
                 percent = (100 * completed_count) // total if total > 0 else 100
 
-                sys.stdout.write(f"\rDownloaded {completed_count} of {total} segments ({percent}%)")
-                sys.stdout.flush()
+                if sys.stdout is not None:
+                    try:
+                        sys.stdout.write(f"\rDownloaded {completed_count} of {total} segments ({percent}%)")
+                        sys.stdout.flush()
+                    except Exception:
+                        pass
 
                 if progress_cb:
                     progress_cb(ep_title, completed_count, total, speed_str, "downloading")
             except Exception as e:
                 if progress_cb:
                     progress_cb(ep_title, completed_count, total, "0 MB/s", "failed")
-                print()
+                try:
+                    if sys.stdout is not None:
+                        print()
+                except Exception:
+                    pass
                 raise e
 
-    print("\nFinished downloading!")
+    try:
+        if sys.stdout is not None:
+            print("\nFinished downloading!")
+    except Exception:
+        pass
 
     parts = bytearray(init_data)
     for res in results:
@@ -451,8 +463,16 @@ def download_episode(
         output_filename = os.path.join(output_dir, filename)
 
         if os.path.exists(output_filename):
-            print(f"Skipping (file already exists): {output_filename}")
-            return
+            sz = os.path.getsize(output_filename)
+            if sz > 10 * 1024 * 1024:
+                print(f"Skipping (file already exists): {output_filename} ({sz / (1024*1024):.1f} MB)")
+                return output_filename
+            else:
+                print(f"Existing file is corrupted/partial ({sz} bytes), re-downloading...")
+                try:
+                    os.remove(output_filename)
+                except Exception:
+                    pass
 
         sub_tracks: List[MediaTrack] = []
         for loc in subs_langs:
@@ -540,6 +560,7 @@ def download_episode(
         )
 
         print(f"\nDownload finished! Output file: {output_filename}\n")
+        return output_filename
 
     finally:
         print("Cleaning up...")
