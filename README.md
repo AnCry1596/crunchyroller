@@ -2,15 +2,15 @@
 
 # 🎬 Crunchyroller
 
-**Production-ready Desktop App & CLI to download Crunchyroll anime in full quality.**  
+**Production-ready Desktop App, CLI & Discord Bot to download Crunchyroll anime in full quality.**  
 Multi-threaded DASH downloads, multiple audio & subtitle tracks, Widevine DRM decryption, and auto-muxing to MKV.
 
 [![Release](https://img.shields.io/github/v/release/Vure-sh/crunchyroller?color=black&style=for-the-badge)](https://github.com/Vure-sh/crunchyroller/releases/latest)
-[![Platform](https://img.shields.io/badge/Platform-Windows%2064--bit-black?style=for-the-badge&logo=windows)](https://github.com/Vure-sh/crunchyroller/releases/latest)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-black?style=for-the-badge)](https://github.com/Vure-sh/crunchyroller/releases/latest)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-black?style=for-the-badge&logo=python)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-black?style=for-the-badge)](LICENSE)
 
-[**📥 Download Latest Executable (.zip)**](https://github.com/Vure-sh/crunchyroller/releases/latest) • [**✨ Features**](#-features) • [**🔑 Widevine Setup**](#-widevine-keys-required) • [**⚙️ Developer Setup**](#-developer-setup)
+[**📥 Download Latest Release**](https://github.com/Vure-sh/crunchyroller/releases/latest) • [**✨ Features**](#-features) • [**🔑 Widevine Setup**](#-widevine-keys-required) • [**💻 CLI Reference**](#-cli-reference) • [**🤖 Discord Bot**](#-discord-bot-remote-control) • [**⚙️ Developer Setup**](#-developer-setup)
 
 ---
 
@@ -22,45 +22,48 @@ Multi-threaded DASH downloads, multiple audio & subtitle tracks, Widevine DRM de
 
 ## ✨ Features
 
-- 🖥️ **Native Desktop App**: Built-in minimalist glassmorphism interface powered by PyWebView. No terminal required.
-- ⚡ **Multi-Threaded DASH Downloader**: Ultra-fast segmented downloads for episodes, full seasons, or complete series.
-- 🔊 **Multi-Audio & Multi-Subtitles**: Choose any combination of dubs (Japanese, English, Latin Spanish, French, German, etc.) and soft subtitles.
-- 🔑 **Widevine DRM Decryption**: Seamlessly decrypts CENC encrypted streams using your Widevine device keys (`.wvd` or `.bin` / `.pem`).
-- 🌐 **In-App Browser Session Capturer**: Automatically captures your `etp_rt` session cookie via built-in web login or auto-detects browser cookies.
-- 🎬 **FFmpeg Auto-Muxing**: Packs video, audio tracks, subtitles, fonts, and metadata directly into a single, clean `.mkv` file.
-- 💻 **CLI Mode Available**: Prefer the terminal? Full command-line interface with batch file downloading support.
+- 🖥️ **Modern Glassmorphism Desktop UI**: Minimalist native app window powered by PyWebView, with fallback to your default browser.
+- ⚡ **Multi-Threaded DASH Downloader**: High-speed segmented downloading for individual episodes, full seasons, or complete series.
+- 🔊 **Multi-Audio & Multi-Subtitles**: Select multiple dub tracks (Japanese, English, Spanish, French, German, etc.) and soft subtitles multiplexed together.
+- 🔑 **Widevine DRM Decryption**: Automated CENC stream decryption using your Widevine device keys (`.wvd` or `client_id.bin` + `private_key.pem`).
+- 🌐 **In-App Session Capture**: Automatically captures and stores your `etp_rt` session token via web login or browser cookie detection.
+- 🎬 **FFmpeg Auto-Muxing**: Merges video streams, all audio tracks, soft subtitles, embedded fonts, and metadata directly into a clean `.mkv` file.
+- 🤖 **Discord Bot Remote Control**: Trigger and queue downloads directly from your phone via interactive Discord slash commands with live progress embeds.
+- 💻 **Versatile CLI Mode**: Full command-line interface with batch downloading from text files and granular stream selection.
+- 📱 **Android Auth Companion**: Integrated companion module for mobile authentication flows.
 
 ---
 
 ## 🚀 Quick Start (Portable Executable)
 
-No Python installation required!
+For Windows users who don't want to install Python:
 
-1. Download the latest **[`crunchyroller-v1.1.1-win64.zip`](https://github.com/Vure-sh/crunchyroller/releases/latest)** from Releases.
-2. Extract the ZIP folder.
-3. Place your **Widevine keys** (see below) inside the extracted `crunchyroller/` folder next to `crunchyroller.exe`.
-4. Double-click `crunchyroller.exe` to launch!
+1. Download the latest **`crunchyroller-*-win64.zip`** from [**Releases**](https://github.com/Vure-sh/crunchyroller/releases/latest).
+2. Extract the ZIP archive.
+3. Place your **Widevine keys** (see [Widevine Keys](#-widevine-keys-required)) inside the extracted `crunchyroller/` folder next to `crunchyroller.exe`.
+4. Double-click `crunchyroller.exe` to launch the GUI!
 
 ---
 
 ## 🔑 Widevine Keys (Required)
 
-Crunchyroll encrypts its video streams using Widevine DRM. To decrypt and save videos, you must provide your own Widevine device key.
+Crunchyroll protects its streams using Widevine DRM. To decrypt and download videos, provide your Widevine CDM device keys.
 
-Place **ONE** of the following inside your app folder next to `crunchyroller.exe` (or in the project root if running from source):
+Place **ONE** of the following setups inside the project root (or next to `crunchyroller.exe`):
 
-* **Option A**: A `*.wvd` file (easiest)
-* **Option B**: `client_id.bin` AND `private_key.pem`
+* **Option A (Recommended):** A `*.wvd` device file
+* **Option B:** Both `client_id.bin` and `private_key.pem` files
 
-> ⚠️ *Note: Widevine device keys cannot be distributed with this project for legal reasons. Search for "ready to use CDMs" or check Android Studio tools if you need to generate your own.*
+> [!NOTE]
+> Widevine device keys cannot be distributed with this project for legal reasons. Search for *"ready to use CDMs"* or use Android Studio / dumping tools to generate your own.
 
 ---
 
 ## ⚙️ Developer Setup (Run from Source)
 
 ### 1. Prerequisites
-* Python 3.10+
-* [FFmpeg](https://ffmpeg.org/) (ensure `ffmpeg.exe` is in your system `PATH` or placed in the project root).
+* **Python 3.10+**
+* [**FFmpeg**](https://ffmpeg.org/) installed and available in your system `PATH` (or placed in the project root).
 
 ### 2. Installation
 ```bash
@@ -68,24 +71,87 @@ Place **ONE** of the following inside your app folder next to `crunchyroller.exe
 git clone https://github.com/Vure-sh/crunchyroller.git
 cd crunchyroller
 
-# Install Python dependencies
+# Create and activate a virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 3. Launching
+### 3. Launching GUI
 ```bash
-# Launch Native Desktop App
+# Launch native desktop GUI (PyWebView)
 python main.py --gui
 
-# Download a single episode via CLI
-python main.py --etp-rt "YOUR_ETP_RT" --url "https://www.crunchyroll.com/watch/..." --video-quality 1080p
+# Launch web GUI in your default browser
+python main.py --browser
+```
+
+---
+
+## 🤖 Discord Bot (Remote Control)
+
+Control and monitor downloads remotely from Discord on your phone or PC:
+
+1. Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications) and obtain your bot token.
+2. Create a `.env` file in the project root:
+   ```env
+   DISCORD_BOT_TOKEN=your_bot_token_here
+   ```
+3. Start the bot:
+   ```bash
+   python discord_bot.py
+   ```
+
+### Bot Commands
+* `/download [url]` — Open an interactive picker with season selection, multiselect dropdowns, and custom range modals.
+* `/status` — View real-time auto-updating embed dashboard (download speed, segment progress, and active queue).
+* `/cancel` — Cancel current download and clear the queue.
+
+---
+
+## 💻 CLI Reference
+
+Crunchyroller can be fully driven from the terminal:
+
+### Common Commands
+
+```bash
+# Download a single episode in 1080p
+python main.py --url "https://www.crunchyroll.com/watch/..." --video-quality 1080p
+
+# Download with multiple audio dubs and subtitle languages
+python main.py --url "https://www.crunchyroll.com/watch/..." --audio-lang "ja-JP,en-US" --subs-lang "en-US,es-419"
 
 # Download an entire season
-python main.py --etp-rt "YOUR_ETP_RT" --url "https://www.crunchyroll.com/series/..." --season 1
+python main.py --url "https://www.crunchyroll.com/series/..." --season 1
 
-# Batch download URLs from a file
-python main.py --etp-rt "YOUR_ETP_RT" --file urls.txt
+# Download entire series (all seasons)
+python main.py --url "https://www.crunchyroll.com/series/..."
+
+# Batch download multiple URLs from a text file (one URL per line)
+python main.py --file urls.txt
+
+# Specify your etp_rt token manually
+python main.py --etp-rt "YOUR_ETP_RT_COOKIE" --url "https://www.crunchyroll.com/watch/..."
 ```
+
+### CLI Options
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--gui` | Flag | `False` | Launch native desktop GUI app window |
+| `--browser` | Flag | `False` | Open GUI in default web browser instead of native window |
+| `--url` | String | `""` | URL of the episode, season, or series to download |
+| `--file` | String | `""` | Path to a text file containing URLs (one per line) |
+| `--audio-lang` | String | `ja-JP` | Audio language(s), comma-separated (e.g. `ja-JP,en-US`). First is default. |
+| `--subs-lang` | String | `en-US` | Subtitle language(s), comma-separated (e.g. `en-US,es-419`). First is default. |
+| `--video-quality` | String | `1080p` | Target video resolution (`1080p`, `720p`, `480p`, `360p`) |
+| `--audio-quality` | String | `192k` | Target audio bitrate (`192k`, `96k`) |
+| `--season` | Integer | `0` | Season number filter (used for series links; `0` downloads all) |
+| `--etp-rt` | String | `""` | Crunchyroll `etp_rt` authentication cookie value |
+| `--debug-manifest`| Flag | `False` | Log raw episode playback JSON and DASH manifest XML |
 
 ---
 
@@ -93,29 +159,36 @@ python main.py --etp-rt "YOUR_ETP_RT" --file urls.txt
 
 ```
 crunchyroller/
+├── android/                 # Android Companion App
+│   └── app/src/main/        # Mobile auth & WebView session manager
 ├── crunchyroll/             # Core Downloader & API Logic
 │   ├── api.py               # Crunchyroll API parser (Series, Seasons, Episodes)
 │   ├── auth.py              # Auth handler & cookie capturer
-│   ├── downloader.py        # Multi-threaded DASH downloader
-│   ├── drm.py               # PyWidevine license exchange & decryption
-│   ├── merger.py            # FFmpeg mkvmerge multiplexer
-│   └── mpd.py               # DASH manifest XML parser
+│   ├── downloader.py        # Multi-threaded DASH stream downloader
+│   ├── drm.py               # PyWidevine license exchange & CENC decryption
+│   ├── http_client.py       # Resilient HTTP client with Cloudflare bypass
+│   ├── merger.py            # FFmpeg / mkvmerge multiplexer
+│   ├── mpd.py               # DASH manifest XML parser
+│   ├── token.py             # Anonymous token generator
+│   ├── types.py             # Data models & structures
+│   └── utils.py             # Filename sanitization & path utilities
 ├── web/                     # Minimalist B&W Glassmorphism Web UI
 │   ├── index.html
 │   ├── css/
 │   └── js/
+├── discord_bot.py           # Remote control Discord bot with live embed dashboard
 ├── main.py                  # CLI & App entry point
 ├── web_gui.py               # PyWebView window & HTTP REST API handler
-├── build_exe.py             # PyInstaller standalone executable builder
-└── requirements.txt
+├── requirements.txt         # Python package dependencies
+└── README.md
 ```
 
 ---
 
 ## 💬 Community & Support
 
-* If you encounter an issue or have a feature request, please open an [**Issue**](https://github.com/Vure-sh/crunchyroller/issues).
-* For setup questions, reach out on Discord: **`.vure`**
+* 🐛 Found a bug or have a suggestion? Open an [**Issue**](https://github.com/Vure-sh/crunchyroller/issues).
+* 💬 Discord: **`.vure`**
 
 ---
 
