@@ -115,6 +115,11 @@ def _run_download(items, vq, aq, al, sl):
                 video_quality=vq, audio_quality=aq, progress_cb=_cb,
             )
             _log(f"done: {label}")
+        except TimeoutError as e:
+            if "Hedged segment" in str(e):
+                _log(f"warn: slow segment hedge timed out for {ep_id} (download still completed)")
+            else:
+                _log(f"error on {ep_id}: {e}")
         except Exception as e:
             _log(f"error on {ep_id}: {e}")
 
