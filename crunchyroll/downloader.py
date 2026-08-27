@@ -1,11 +1,12 @@
 import os
+import shutil
 import subprocess
 import sys
 import time
 import tempfile
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import requests
 from Crypto.Cipher import AES
@@ -48,8 +49,8 @@ def build_url(
     return base_url + res
 
 
-def download_part(url: str, max_retries: int = MAX_RETRIES) -> bytes:
-    """grab a segment. retry if cr gets mad."""
+def download_part(url: str, save_path: Optional[str] = None, max_retries: int = MAX_RETRIES) -> Union[bytes, int]:
+    """grab a segment directly to disk or memory. retry if cr gets mad."""
     headers = {
         "Origin": "https://static.crunchyroll.com",
         "Referer": "https://static.crunchyroll.com/",
@@ -61,12 +62,21 @@ def download_part(url: str, max_retries: int = MAX_RETRIES) -> bytes:
             time.sleep(attempt * 2)
 
         try:
-            resp = requests.get(url, headers=headers, timeout=20)
-            if resp.status_code == 200:
-                return resp.content
-            print(
-                f"\nSegment download returned status {resp.status_code}, retrying ({attempt + 1}/{max_retries})..."
-            )
+            with requests.get(url, headers=headers, stream=True, timeout=20) as resp:
+                if resp.status_code == 200:
+                    if save_path:
+                        written = 0
+                        with open(save_path, "wb") as f:
+                            for chunk in resp.iter_content(chunk_size=65536):
+                                if chunk:
+                                    f.write(chunk)
+                                    written += len(chunk)
+                        return written
+                    else:
+                        return resp.content
+                print(
+                    f"\nSegment download returned status {resp.status_code}, retrying ({attempt + 1}/{max_retries})..."
+                )
         except Exception as e:
             print(
                 f"\nSegment download failed ({e}), retrying ({attempt + 1}/{max_retries})..."
@@ -74,21 +84,27 @@ def download_part(url: str, max_retries: int = MAX_RETRIES) -> bytes:
 
         attempt += 1
 
-    raise RuntimeError(f"failed after {max_retries} retries")
+    raise RuntimeError(f"failed after {max_retries} retries: {url}")
 
 
 
 
-def decrypt_mp4(parts: bytes, keys: Dict[bytes, bytes], output_filename: str) -> None:
-    """decrypt mp4 parts with ffmpeg cenc demuxer"""
-    if not keys or (b"encv" not in parts and b"enca" not in parts):
-        with open(output_filename, "wb") as f:
+def decrypt_mp4(parts: Union[str, bytes], keys: Dict[bytes, bytes], output_filename: str) -> None:
+    """decrypt mp4 parts with ffmpeg cenc demuxer, streaming from disk to prevent OOM"""
+    is_file = isinstance(parts, str)
+    if is_file:
+        raw_tmp = parts
+    else:
+        raw_tmp = output_filename + ".raw.mp4"
+        with open(raw_tmp, "wb") as f:
             f.write(parts)
-        return
 
-    raw_tmp = output_filename + ".raw.mp4"
-    with open(raw_tmp, "wb") as f:
-        f.write(parts)
+    if not keys:
+        if is_file:
+            shutil.copyfile(raw_tmp, output_filename)
+        else:
+            shutil.move(raw_tmp, output_filename)
+        return
 
     key_hex = list(keys.values())[0].hex()
     ffmpeg_bin = find_ffmpeg()
@@ -105,7 +121,7 @@ def decrypt_mp4(parts: bytes, keys: Dict[bytes, bytes], output_filename: str) ->
     ]
 
     res = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if os.path.exists(raw_tmp):
+    if not is_file and os.path.exists(raw_tmp):
         try:
             os.remove(raw_tmp)
         except Exception:
@@ -116,7 +132,19 @@ def decrypt_mp4(parts: bytes, keys: Dict[bytes, bytes], output_filename: str) ->
 
     # fallback to manual decryption if ffmpeg chokes
     print("Fallback to Python decrypt_mp4...")
-    buf = bytearray(parts)
+    if is_file:
+        with open(raw_tmp, "rb") as f:
+            raw_bytes = f.read()
+    else:
+        raw_bytes = parts
+
+    if not keys or (b"encv" not in raw_bytes and b"enca" not in raw_bytes):
+        with open(output_filename, "wb") as f:
+            f.write(raw_bytes)
+        return
+
+    buf = bytearray(raw_bytes)
+    del raw_bytes
 
     def read_u32(b, pos):
         if pos + 4 > len(b):
@@ -309,7 +337,7 @@ def download_parts(
     ep_title: str = "",
     progress_cb=None,
 ) -> str:
-    """download all track segments at once and decrypt to a temp file"""
+    """download all track segments to disk in parallel and decrypt to a temp file"""
     seg_template = None
     for child in adaptation_set:
         if _clean_tag(child.tag) == "SegmentTemplate":
@@ -319,73 +347,108 @@ def download_parts(
     init_file = seg_template.attrib.get("initialization", "") if seg_template is not None else ""
     media_file = seg_template.attrib.get("media", "") if seg_template is not None else ""
 
-    init_data = requests.get(build_url(base_url, representation_id, init_file)).content
-    timeline = expand_timeline(adaptation_set)
-    total = len(timeline)
+    seg_dir = tempfile.mkdtemp(prefix="cr_segs_")
+    init_path = os.path.join(seg_dir, "init.mp4")
 
-    jobs = [
-        (i, build_url(base_url, representation_id, media_file, item))
-        for i, item in enumerate(timeline, start=1)
-    ]
-    results: List[Optional[bytes]] = [None] * total
+    headers = {
+        "Origin": "https://static.crunchyroll.com",
+        "Referer": "https://static.crunchyroll.com/",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+    }
+    init_url = build_url(base_url, representation_id, init_file)
+    try:
+        with requests.get(init_url, headers=headers, stream=True, timeout=20) as resp:
+            resp.raise_for_status()
+            with open(init_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
 
-    completed_count = 0
-    start_time = time.time()
-    downloaded_bytes = 0
+        timeline = expand_timeline(adaptation_set)
+        total = len(timeline)
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_idx = {executor.submit(download_part, url): idx for idx, url in jobs}
+        jobs = [
+            (i, build_url(base_url, representation_id, media_file, item), os.path.join(seg_dir, f"seg_{i:06d}.mp4"))
+            for i, item in enumerate(timeline, start=1)
+        ]
 
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                data = future.result()
-                results[idx - 1] = data
-                completed_count += 1
-                if data:
-                    downloaded_bytes += len(data)
+        completed_count = 0
+        start_time = time.time()
+        downloaded_bytes = 0
 
-                elapsed = time.time() - start_time
-                speed = (downloaded_bytes / elapsed / (1024 * 1024)) if elapsed > 0 else 0
-                speed_str = f"{speed:.2f} MB/s"
-                percent = (100 * completed_count) // total if total > 0 else 100
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_to_idx = {
+                executor.submit(download_part, url, save_path): idx
+                for idx, url, save_path in jobs
+            }
 
-                if sys.stdout is not None:
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    seg_size = future.result()
+                    completed_count += 1
+                    downloaded_bytes += seg_size
+
+                    elapsed = time.time() - start_time
+                    speed = (downloaded_bytes / elapsed / (1024 * 1024)) if elapsed > 0 else 0
+                    speed_str = f"{speed:.2f} MB/s"
+                    percent = (100 * completed_count) // total if total > 0 else 100
+
+                    if sys.stdout is not None:
+                        try:
+                            sys.stdout.write(f"\rDownloaded {completed_count} of {total} segments ({percent}%)")
+                            sys.stdout.flush()
+                        except Exception:
+                            pass
+
+                    if progress_cb:
+                        progress_cb(ep_title, completed_count, total, speed_str, "downloading")
+                except Exception as e:
+                    if progress_cb:
+                        progress_cb(ep_title, completed_count, total, "0 MB/s", "failed")
                     try:
-                        sys.stdout.write(f"\rDownloaded {completed_count} of {total} segments ({percent}%)")
-                        sys.stdout.flush()
+                        if sys.stdout is not None:
+                            print()
                     except Exception:
                         pass
+                    raise e
 
-                if progress_cb:
-                    progress_cb(ep_title, completed_count, total, speed_str, "downloading")
-            except Exception as e:
-                if progress_cb:
-                    progress_cb(ep_title, completed_count, total, "0 MB/s", "failed")
-                try:
-                    if sys.stdout is not None:
-                        print()
-                except Exception:
-                    pass
-                raise e
+        try:
+            if sys.stdout is not None:
+                print("\nFinished downloading!")
+        except Exception:
+            pass
 
-    try:
-        if sys.stdout is not None:
-            print("\nFinished downloading!")
-    except Exception:
-        pass
+        raw_tmp = tempfile.NamedTemporaryFile(suffix=".raw.mp4", delete=False)
+        raw_path = raw_tmp.name
+        raw_tmp.close()
 
-    parts = bytearray(init_data)
-    for res in results:
-        if res:
-            parts.extend(res)
+        with open(raw_path, "wb") as out_f:
+            if os.path.exists(init_path):
+                with open(init_path, "rb") as in_f:
+                    shutil.copyfileobj(in_f, out_f, length=1024 * 1024)
 
-    tmp_file = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-    tmp_path = tmp_file.name
-    tmp_file.close()
+            for i in range(1, total + 1):
+                seg_path = os.path.join(seg_dir, f"seg_{i:06d}.mp4")
+                if os.path.exists(seg_path):
+                    with open(seg_path, "rb") as in_f:
+                        shutil.copyfileobj(in_f, out_f, length=1024 * 1024)
 
-    decrypt_mp4(bytes(parts), keys, tmp_path)
-    return tmp_path
+        decrypted_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+        decrypted_path = decrypted_tmp.name
+        decrypted_tmp.close()
+
+        decrypt_mp4(raw_path, keys, decrypted_path)
+        if os.path.exists(raw_path):
+            try:
+                os.remove(raw_path)
+            except Exception:
+                pass
+
+        return decrypted_path
+
+    finally:
+        shutil.rmtree(seg_dir, ignore_errors=True)
 
 
 def download_subs(url: str) -> str:

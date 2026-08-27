@@ -3,6 +3,9 @@ import sys
 import os
 from typing import List
 
+# Ensure pywebview uses PyQt6 on Linux when available
+os.environ.setdefault("QT_API", "pyqt6")
+
 class SafeStream:
     def __init__(self, target):
         self._target = target

@@ -7,6 +7,9 @@ import time
 import webbrowser
 from urllib.parse import urlparse
 
+# Ensure pywebview uses PyQt6 on Linux when available
+os.environ.setdefault("QT_API", "pyqt6")
+
 class SafeStream:
     def __init__(self, target):
         self._target = target
@@ -307,7 +310,8 @@ def start_gui(port=8000, use_browser=False):
                 min_size=(640, 520),
                 background_color="#000000",
             )
-            webview.start()
+            gui_backend = "qt" if sys.platform != "win32" else None
+            webview.start(gui=gui_backend)
         except Exception as e:
             err = str(e).lower()
             # WebView2 not installed — show a dialog so the user knows what to do
