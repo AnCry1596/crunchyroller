@@ -39,10 +39,16 @@ sys.stderr = _SafeStream(sys.stderr)
 from .downloader import download_episode, download_season
 from .merger import merge_everything
 from .http_client import CrunchyrollHttpClient
+from .decryptor import decrypt_stream, decrypt_mp4
+from .integrity import StreamValidator, atomic_finalize
 
 __all__ = [
     "download_episode",
     "download_season",
     "merge_everything",
     "CrunchyrollHttpClient",
+    "decrypt_stream",
+    "decrypt_mp4",
+    "StreamValidator",
+    "atomic_finalize",
 ]

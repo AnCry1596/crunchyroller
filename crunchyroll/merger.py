@@ -1,13 +1,25 @@
+"""
+crunchyroll/merger.py
+
+Multi-track Matroska (MKV) multiplexer using FFmpeg.
+Normalizes stream timestamps to prevent audio/video/subtitle desync and drift,
+applies ISO-639-2/B language codes, sets track dispositions, and writes global metadata.
+"""
+
+import logging
 import os
 import shutil
 import subprocess
-from typing import List
+from typing import List, Optional
+
 from .types import EpisodeInfo, MediaTrack
 from .utils import LANGUAGE_CODES, track_title
 
+logger = logging.getLogger("crunchyroll.merger")
+
 
 def find_ffmpeg() -> str:
-    """locates ffmpeg binary locally or in PATH"""
+    """Locates ffmpeg binary locally or in the system PATH."""
     local_binary = os.path.join(os.getcwd(), "ffmpeg.exe" if os.name == "nt" else "ffmpeg")
     if os.path.exists(local_binary):
         return local_binary
@@ -26,31 +38,50 @@ def merge_everything(
     output_file: str,
     info: EpisodeInfo,
 ) -> None:
-    """mux everything into a single mkv"""
+    """
+    Muxes video, multi-audio dubs, and subtitle tracks into a single MKV container.
+    Injects timestamp normalization flags (-avoid_negative_ts make_zero -fflags +genpts -max_interleave_delta 0)
+    to prevent audio/video/subtitle drift and buffer stalls.
+    """
     ffmpeg_bin = find_ffmpeg()
-    args = [ffmpeg_bin, "-y", "-i", video_file]
 
+    args = [ffmpeg_bin, "-y"]
+
+    # Timestamp normalization and interleaving flags
+    args.extend([
+        "-avoid_negative_ts", "make_zero",
+        "-fflags", "+genpts",
+        "-max_interleave_delta", "0",
+    ])
+
+    # Video input (stream 0)
+    args.extend(["-i", video_file])
+
+    # Audio inputs (streams 1 .. N)
     for audio in audio_tracks:
         args.extend(["-i", audio.file])
+
+    # Subtitle inputs (streams N+1 .. M)
     for sub in sub_tracks:
         args.extend(["-i", sub.file])
 
-    # map video
+    # Map video track
     args.extend(["-map", "0:v:0"])
 
-    # map audio
+    # Map audio tracks
     for i in range(len(audio_tracks)):
         args.extend(["-map", f"{1 + i}:a:0"])
 
-    # map subs
+    # Map subtitle tracks
     for j in range(len(sub_tracks)):
         args.extend(["-map", f"{1 + len(audio_tracks) + j}"])
 
+    # Codec copying
     args.extend(["-c:v", "copy", "-c:a", "copy"])
     if sub_tracks:
         args.extend(["-c:s", "copy"])
 
-    # audio metadata
+    # Audio metadata (ISO 639-2/B language codes and localized titles)
     for i, audio in enumerate(audio_tracks):
         lang_code = LANGUAGE_CODES.get(audio.locale, audio.locale)
         title = track_title(audio.locale)
@@ -59,7 +90,7 @@ def merge_everything(
             f"-metadata:s:a:{i}", f"title={title}",
         ])
 
-    # sub metadata
+    # Subtitle metadata
     for j, sub in enumerate(sub_tracks):
         lang_code = LANGUAGE_CODES.get(sub.locale, sub.locale)
         title = track_title(sub.locale)
@@ -68,7 +99,7 @@ def merge_everything(
             f"-metadata:s:s:{j}", f"title={title}",
         ])
 
-    # track dispositions
+    # Track dispositions (default on first audio/sub, 0 on others)
     for i in range(len(audio_tracks)):
         disposition = "default" if i == 0 else "0"
         args.extend([f"-disposition:a:{i}", disposition])
@@ -77,7 +108,7 @@ def merge_everything(
         disposition = "default" if j == 0 else "0"
         args.extend([f"-disposition:s:{j}", disposition])
 
-    # global metadata
+    # Global metadata tags (fixed season_number and episode_number)
     meta_title = (
         f"S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d} - {info.title}"
     )
@@ -85,7 +116,8 @@ def merge_everything(
         "-metadata:g", f"title={meta_title}",
         "-metadata:g", f"show={info.episode_metadata.series_title}",
         "-metadata:g", f"track={info.episode_metadata.episode_number}",
-        "-metadata:g", f"season_number={info.episode_metadata.episode_number}",
+        "-metadata:g", f"season_number={info.episode_metadata.season_number}",
+        "-metadata:g", f"episode_number={info.episode_metadata.episode_number}",
         output_file,
     ])
 
@@ -98,7 +130,7 @@ def merge_everything(
                 pass
         raise RuntimeError(f"ffmpeg failed: {result.stderr}")
 
-    # cleanup temp files
+    # Clean up intermediate temporary files
     if os.path.exists(video_file):
         try:
             os.remove(video_file)

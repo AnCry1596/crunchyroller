@@ -45,6 +45,7 @@ from crunchyroll.api import get_episode_info, get_season_episodes, get_seasons, 
 from crunchyroll.auth import load_config, save_config
 from crunchyroll.downloader import download_episode, download_season, download_series
 from crunchyroll.http_client import CrunchyrollHttpClient
+from crunchyroll.session_pool import ConcurrencyConfig
 
 
 def ensure_webview2() -> None:
@@ -145,6 +146,15 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
     video_quality = getattr(args, "quality_video", None) or getattr(args, "video_quality", "1080p")
     audio_quality = getattr(args, "quality_audio", None) or getattr(args, "audio_quality", "192k")
 
+    workers = getattr(args, "workers", 16) or 16
+    disable_hedging = getattr(args, "disable_hedging", False)
+    concurrency_cfg = ConcurrencyConfig(
+        min_workers=min(8, workers),
+        max_workers=max(48, workers),
+        initial_workers=workers,
+        hedging_enabled=not disable_hedging,
+    )
+
     if content_type == "episode":
         info = get_episode_info(client, content_id)
         download_episode(
@@ -156,6 +166,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             video_quality,
             audio_quality,
             debug=args.debug_manifest,
+            concurrency_config=concurrency_cfg,
         )
     elif content_type == "series":
         download_series(
@@ -167,6 +178,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             audio_quality,
             season_filter=args.season or 0,
             debug=args.debug_manifest,
+            concurrency_config=concurrency_cfg,
         )
     elif content_type == "season":
         episodes = get_season_episodes(client, content_id, primary_audio, primary_subs)
@@ -178,6 +190,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             subs_langs,
             episodes,
             debug=args.debug_manifest,
+            concurrency_config=concurrency_cfg,
         )
 
 
@@ -208,6 +221,22 @@ def main() -> None:
     parser.add_argument("--quality-video", type=str, default="", help="Alias for --video-quality")
     parser.add_argument("--quality-audio", type=str, default="", help="Alias for --audio-quality")
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=16,
+        help="Worker concurrency for downloading segments (8 to 48)",
+    )
+    parser.add_argument(
+        "--disable-hedging",
+        action="store_true",
+        help="Disable tail-latency chunk hedging",
+    )
+    parser.add_argument(
+        "--benchmark",
+        action="store_true",
+        help="Run automated throughput and memory verification benchmark suite",
+    )
+    parser.add_argument(
         "--season",
         type=int,
         default=0,
@@ -226,6 +255,15 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # run benchmarks if requested
+    if args.benchmark:
+        from benchmarks.benchmark_throughput import run_throughput_benchmark
+        from benchmarks.benchmark_memory import run_memory_benchmark
+        print("Running Crunchyroller Performance and Resource Benchmarks...\n")
+        run_throughput_benchmark()
+        run_memory_benchmark()
+        return
 
     # launch gui if asked or if we have no inputs
     if args.gui or len(sys.argv) == 1 or (not args.url and not args.file and not args.etp_rt and not args.email):
