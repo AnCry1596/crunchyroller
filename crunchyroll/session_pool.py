@@ -25,7 +25,7 @@ class ConcurrencyConfig:
     max_workers: int = 48
     initial_workers: int = 16
     aimd_enabled: bool = True
-    hedging_enabled: bool = True
+    hedging_enabled: bool = False  # disabled: hedge timeout math kills downloads on slow CDN segments
     hedge_factor: float = 2.0  # multiplier of median latency to trigger hedge
     hedge_min_delay: float = 1.5  # minimum delay in seconds before hedging
     max_retries: int = 5
