@@ -165,7 +165,7 @@ def download_parts(
             max_workers=48,
             initial_workers=16,
             aimd_enabled=True,
-            hedging_enabled=True,
+            hedging_enabled=False,
         )
         pool = SessionPool(config=cfg)
         own_pool = True
@@ -212,7 +212,7 @@ def download_parts(
                     break
 
                 try:
-                    seg_data = pool.download_segment_hedged(url)
+                    seg_data = pool.download_segment(url)
                     assembler.add_segment(idx, seg_data)
 
                     with progress_lock:
@@ -325,7 +325,7 @@ def download_parts_optimized(
         max_workers=48,
         initial_workers=16,
         aimd_enabled=True,
-        hedging_enabled=True,
+        hedging_enabled=False,
     )
     pool = SessionPool(config=cfg)
 
@@ -368,7 +368,7 @@ def download_parts_optimized(
                     break
 
                 try:
-                    seg_data = pool.download_segment_hedged(url)
+                    seg_data = pool.download_segment(url)
                     assembler.add_segment(idx, seg_data)
 
                     with progress_lock:
