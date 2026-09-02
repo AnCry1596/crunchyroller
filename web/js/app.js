@@ -231,7 +231,6 @@ async function startDl() {
   startPolling();
 }
 
-// poll progress every 1.2s while download is active
 function startPolling() {
   if (pollTimer) return;
   pollTimer = setInterval(async () => {
@@ -241,30 +240,56 @@ function startPolling() {
       clearInterval(pollTimer);
       pollTimer = null;
     }
-  }, 1200);
+  }, 800);
 }
 
-// update progress bar and console logs
 function updateProgressPanel(dl) {
   if (!dl || dl.status === 'idle') return;
   document.getElementById('dl-panel').style.display = 'block';
 
-  const pct = Math.min(100, dl.progress || 0);
-  document.getElementById('pbar').style.width = pct + '%';
-  document.getElementById('ppct').textContent = pct.toFixed(1) + '%';
-  document.getElementById('cur-ep').textContent = dl.episode || '';
-
   const pill = document.getElementById('pill');
   if (dl.status === 'running') {
     pill.className = 'pill pill-run';
-    pill.innerHTML = '<span class="spin"></span>downloading';
+    if (dl.track === 'muxing') {
+      pill.innerHTML = '<span class="spin"></span>muxing mkv';
+    } else if (dl.track) {
+      pill.innerHTML = `<span class="spin"></span>downloading ${dl.track}`;
+    } else {
+      pill.innerHTML = '<span class="spin"></span>downloading';
+    }
   } else if (dl.status === 'completed') {
     pill.className = 'pill pill-ok';
-    pill.innerHTML = '✓ done';
+    pill.innerHTML = '\u2713 done';
   } else {
     pill.className = 'pill pill-err';
-    pill.innerHTML = '✗ ' + dl.status;
+    pill.innerHTML = '\u2717 ' + dl.status;
   }
+
+  const epIdx   = (dl.ep_idx  || 0) + 1;
+  const epTotal = dl.ep_total || 1;
+  document.getElementById('dl-ep-counter').textContent =
+    dl.status === 'completed' ? `${epTotal} / ${epTotal}` : `${epIdx} / ${epTotal}`;
+
+  document.getElementById('cur-ep').textContent = dl.episode || '';
+
+  const overallPct = Math.min(100, dl.overall_pct || 0);
+  document.getElementById('pbar-overall').style.width = overallPct + '%';
+  document.getElementById('ppct-overall').textContent  = overallPct.toFixed(1) + '%';
+
+  const trackPct = Math.min(100, dl.track_pct || 0);
+  document.getElementById('pbar-track').style.width = trackPct + '%';
+
+  const segsEl = document.getElementById('dl-segs');
+  if (dl.segs_total > 0) {
+    const trackSuffix = dl.track ? ` [${dl.track}]` : '';
+    segsEl.textContent = `${dl.segs_done} / ${dl.segs_total} parts${trackSuffix}`;
+  } else if (dl.track) {
+    segsEl.textContent = dl.track;
+  } else {
+    segsEl.textContent = '';
+  }
+
+  document.getElementById('dl-speed').textContent = dl.speed || '';
 
   const logBox = document.getElementById('log');
   if (dl.log && dl.log.length) {

@@ -492,3 +492,64 @@ hr.div {
   border-top: 1px solid var(--border);
   margin: 16px 0;
 }
+
+/* ── progress panel rebuild ── */
+.dl-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.dl-counter {
+  font-size: 0.72rem;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+.dl-speed {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: var(--white);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  min-width: 80px;
+  text-align: right;
+}
+.dl-ep-name {
+  font-size: 0.82rem;
+  color: var(--text);
+  font-weight: 500;
+  margin-bottom: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 1.2em;
+}
+.dl-bar-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+  margin-top: 10px;
+}
+.dl-bar-title {
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--dim);
+}
+.dl-bar-pct {
+  font-size: 0.68rem;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.prog-bar-wrap-sm {
+  height: 2px;
+  margin: 0 0 14px;
+}
+.prog-bar-dim {
+  background: rgba(255,255,255,0.35);
+  box-shadow: none;
+}

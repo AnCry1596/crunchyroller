@@ -143,6 +143,7 @@ def download_parts(
     progress_cb: Optional[Callable] = None,
     pool: Optional[SessionPool] = None,
     concurrency_config: Optional[ConcurrencyConfig] = None,
+    track_type: str = "video",
 ) -> str:
     """Download all track segments using high-performance streaming assembly and session pool."""
     seg_template = None
@@ -175,6 +176,75 @@ def download_parts(
         raw_tmp = tempfile.NamedTemporaryFile(suffix=".raw.mp4", delete=False)
         raw_path = raw_tmp.name
         raw_tmp.close()
+
+        # Handle direct single-file streams (e.g. Blue Lock SegmentBase with direct BaseURL)
+        if total == 0:
+            media_url = build_url(base_url, representation_id, init_file) if init_file else base_url
+            headers = {
+                "Origin": "https://static.crunchyroll.com",
+                "Referer": "https://static.crunchyroll.com/",
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+            }
+            session = pool.get_session() if pool else requests.Session()
+            with session.get(media_url, headers=headers, stream=True, timeout=30) as resp:
+                resp.raise_for_status()
+                content_len_str = resp.headers.get("Content-Length")
+                total_bytes = int(content_len_str) if content_len_str and content_len_str.isdigit() else 0
+                chunk_size = 512 * 1024  # 512 KB per chunk
+                total_chunks = max(1, (total_bytes + chunk_size - 1) // chunk_size) if total_bytes > 0 else 100
+
+                cur_chunks = 0
+                downloaded_bytes = 0
+                start_time = time.time()
+
+                with open(raw_path, "wb", buffering=1024 * 1024) as f:
+                    for chunk in resp.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded_bytes += len(chunk)
+                            cur_chunks += 1
+                            elapsed = time.time() - start_time
+                            speed_mb = (downloaded_bytes / elapsed / (1024 * 1024)) if elapsed > 0 else 0.0
+                            speed_str = f"{speed_mb:.2f} MB/s"
+                            pct = (100 * cur_chunks) // total_chunks if total_chunks > 0 else 0
+
+                            if sys.stdout is not None:
+                                try:
+                                    sys.stdout.write(
+                                        f"\rDownloaded {cur_chunks} of {total_chunks} parts ({pct}%) [{speed_str}]"
+                                    )
+                                    sys.stdout.flush()
+                                except Exception:
+                                    pass
+
+                            _invoke_progress_cb(
+                                progress_cb,
+                                ep_title,
+                                cur_chunks,
+                                total_chunks,
+                                speed_str,
+                                speed_mb,
+                                track_type,
+                            )
+
+            if sys.stdout is not None:
+                try:
+                    print("\nFinished downloading!")
+                except Exception:
+                    pass
+
+            decrypted_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+            decrypted_path = decrypted_tmp.name
+            decrypted_tmp.close()
+
+            decrypt_mp4(raw_path, keys, decrypted_path)
+            if os.path.exists(raw_path):
+                try:
+                    os.remove(raw_path)
+                except Exception:
+                    pass
+
+            return decrypted_path
 
         # Step 1: Download and write initialization segment directly
         init_url = build_url(base_url, representation_id, init_file)
@@ -242,7 +312,7 @@ def download_parts(
                         total,
                         speed_str,
                         speed_mb,
-                        "downloading",
+                        track_type,
                     )
                 except Exception as ex:
                     with progress_lock:
@@ -583,6 +653,7 @@ def download_episode(
                 ep_title=info.title,
                 progress_cb=progress_cb,
                 pool=shared_pool,
+                track_type="audio",
             )
             audio_tracks.append(MediaTrack(file=audio_file, locale=version.audio_locale))
 
@@ -601,6 +672,7 @@ def download_episode(
                     ep_title=info.title,
                     progress_cb=progress_cb,
                     pool=shared_pool,
+                    track_type="video",
                 )
 
             success = delete_stream(client, version.guid, ep.token)
@@ -609,6 +681,16 @@ def download_episode(
 
         if not video_file:
             raise RuntimeError("No video file downloaded!")
+
+        _invoke_progress_cb(
+            progress_cb,
+            info.title,
+            1,
+            1,
+            "",
+            0.0,
+            "muxing",
+        )
 
         temp_output_filename = output_filename + ".tmp.mkv"
         merge_everything(

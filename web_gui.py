@@ -64,10 +64,17 @@ STATE = {
         "subs_lang":     initial_cfg.get("subs_lang", "en-US"),
     },
     "download": {
-        "status":   "idle",
-        "progress": 0.0,
-        "episode":  "",
-        "log":      [],
+        "status":      "idle",
+        "episode":     "",
+        "track":       "",
+        "ep_idx":      0,
+        "ep_total":    0,
+        "segs_done":   0,
+        "segs_total":  0,
+        "speed":       "",
+        "overall_pct": 0.0,
+        "track_pct":   0.0,
+        "log":         [],
     },
 }
 LOCK = threading.Lock()
@@ -80,14 +87,17 @@ def _log(msg):
             STATE["download"]["log"].pop(0)
 
 
-# background download runner
 def _run_download(items, vq, aq, al, sl):
+    ep_total = len(items)
     with LOCK:
-        STATE["download"].update(status="running", progress=0.0, log=[])
+        STATE["download"].update(
+            status="running", episode="", speed="", track="",
+            segs_done=0, segs_total=0, ep_idx=0, ep_total=ep_total,
+            overall_pct=0.0, track_pct=0.0, log=[],
+        )
 
     client = CrunchyrollHttpClient(STATE["etp_rt"])
-    total = len(items)
-    _log(f"starting {total} episode(s)...")
+    _log(f"starting {ep_total} episode(s)...")
 
     a_langs = [x.strip() for x in al.split(",") if x.strip()] or ["ja-JP"]
     s_langs = [x.strip() for x in sl.split(",") if x.strip()] or ["en-US"]
@@ -96,31 +106,76 @@ def _run_download(items, vq, aq, al, sl):
         ep_id = item.get("id") if isinstance(item, dict) else item
         try:
             info = get_episode_info(client, ep_id)
-            label = f"S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d} — {info.title}"
+            label = f"S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d} \u2014 {info.title}"
             with LOCK:
-                STATE["download"]["episode"]  = label
-                STATE["download"]["progress"] = round((idx / total) * 100, 1)
-            _log(f"[{idx+1}/{total}] {label} [{vq}/{aq}]")
+                STATE["download"]["ep_idx"]      = idx
+                STATE["download"]["episode"]     = label
+                STATE["download"]["track"]       = "starting"
+                STATE["download"]["segs_done"]   = 0
+                STATE["download"]["segs_total"]  = 0
+                STATE["download"]["track_pct"]   = 0.0
+                STATE["download"]["overall_pct"] = round((idx / ep_total) * 100, 1)
+            _log(f"[{idx+1}/{ep_total}] {label} [{vq}/{aq}]")
 
-            def _cb(title, cur, tot, speed, status):
+            def _cb(title, cur, tot, speed, status, _idx=idx):
+                ep_base = (_idx / ep_total) * 100
+                ep_slice = (1 / ep_total) * 100
+
+                track_type = str(status).lower() if status else "video"
+                frac = (cur / tot) if tot > 0 else 0.0
+
+                if "audio" in track_type:
+                    # Audio represents the first 15% of the episode
+                    within_ep = frac * 0.15
+                    display_track = "audio"
+                elif "mux" in track_type:
+                    within_ep = 0.98
+                    display_track = "muxing"
+                elif "done" in track_type:
+                    within_ep = 1.0
+                    display_track = "done"
+                else:
+                    # Video represents 15% - 95% of the episode
+                    within_ep = 0.15 + (frac * 0.80)
+                    display_track = "video"
+
+                overall = round(ep_base + (within_ep * ep_slice), 1)
+                cap = round(((_idx + 1) / ep_total) * 100 - 0.1, 1)
+
                 with LOCK:
-                    base  = (idx / total) * 100
-                    extra = ((cur / tot) / total) * 100 if tot > 0 else 0
-                    STATE["download"]["progress"] = round(base + extra, 1)
-                    STATE["download"]["episode"]  = f"{title} ({cur}/{tot})"
+                    STATE["download"]["segs_done"]   = cur
+                    STATE["download"]["segs_total"]  = tot
+                    STATE["download"]["speed"]        = speed or ""
+                    STATE["download"]["track"]        = display_track
+                    STATE["download"]["track_pct"]   = round(frac * 100, 1) if "mux" not in track_type else 100.0
+                    STATE["download"]["overall_pct"] = min(overall, cap)
 
             download_episode(
                 client=client, base_content_id=ep_id, info=info,
                 audio_langs=a_langs, subs_langs=s_langs,
                 video_quality=vq, audio_quality=aq, progress_cb=_cb,
             )
+            with LOCK:
+                STATE["download"]["overall_pct"] = round(((idx + 1) / ep_total) * 100, 1)
+                STATE["download"]["track_pct"]   = 100.0
+                STATE["download"]["track"]       = "done"
+                STATE["download"]["speed"]       = ""
             _log(f"done: {label}")
+
         except Exception as e:
             _log(f"error on {ep_id}: {e}")
+            with LOCK:
+                STATE["download"].update(status="error", episode=f"failed: {ep_id}")
+            return
 
     with LOCK:
-        STATE["download"].update(status="completed", progress=100.0, episode="all done")
-    _log(f"finished {total} episode(s)")
+        STATE["download"].update(
+            status="completed", overall_pct=100.0, track_pct=100.0,
+            episode="all done", track="", speed=""
+        )
+    _log(f"finished {ep_total} episode(s)")
+
+
 
 
 # http request handler

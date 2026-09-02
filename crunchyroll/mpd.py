@@ -21,19 +21,42 @@ def parse_manifest(client: CrunchyrollHttpClient, url: str, debug: bool = False)
     return root
 
 
+_WIDEVINE_SCHEME_ID = "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"
+
+
 def get_pssh(manifest: ET.Element) -> Optional[str]:
-    """dig out the cenc pssh string from the manifest"""
+    """dig out the cenc pssh string from the manifest.
+    handles all CR MPD variants - some shows put ContentProtection under
+    AdaptationSet, others (e.g. Blue Lock) put it directly under Period.
+    """
+
+    def _extract_from_cp(cp: ET.Element) -> Optional[str]:
+        # check child elements first (e.g. <cenc:pssh> or bare <pssh>)
+        for child in cp:
+            tag = _clean_tag(child.tag).lower()
+            if "pssh" in tag and child.text and child.text.strip():
+                return child.text.strip()
+        # check attributes for inline pssh value
+        for key, val in cp.attrib.items():
+            if "pssh" in key.lower() and val.strip():
+                return val.strip()
+        return None
+
+    # pass 1: prefer the Widevine-specific ContentProtection by schemeIdUri
     for elem in manifest.iter():
-        if _clean_tag(elem.tag) == "AdaptationSet":
-            for cp in elem:
-                if _clean_tag(cp.tag) == "ContentProtection":
-                    # check for pssh
-                    for key, val in cp.attrib.items():
-                        if "pssh" in key.lower():
-                            return val
-                    for child in cp:
-                        if "pssh" in _clean_tag(child.tag).lower():
-                            return child.text
+        if _clean_tag(elem.tag) == "ContentProtection":
+            if elem.attrib.get("schemeIdUri", "").lower() == _WIDEVINE_SCHEME_ID:
+                result = _extract_from_cp(elem)
+                if result:
+                    return result
+
+    # pass 2: fall back to any ContentProtection anywhere in the manifest
+    for elem in manifest.iter():
+        if _clean_tag(elem.tag) == "ContentProtection":
+            result = _extract_from_cp(elem)
+            if result:
+                return result
+
     return None
 
 

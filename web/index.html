@@ -112,16 +112,25 @@
 
       <div class="card" id="dl-panel">
         <div class="card-label">progress</div>
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <span id="pill" class="pill pill-run"><span class="spin"></span> downloading</span>
-          <span id="cur-ep" style="font-size:.75rem;color:var(--dim)"></span>
+        <div class="dl-status-row">
+          <span id="pill" class="pill pill-run"><span class="spin"></span>downloading</span>
+          <span id="dl-ep-counter" class="dl-counter">0 / 0</span>
+          <span id="dl-speed" class="dl-speed"></span>
+        </div>
+        <div id="cur-ep" class="dl-ep-name"></div>
+        <div class="dl-bar-label">
+          <span class="dl-bar-title">overall</span>
+          <span id="ppct-overall" class="dl-bar-pct">0.0%</span>
         </div>
         <div class="prog-bar-wrap">
-          <div class="prog-bar" id="pbar"></div>
+          <div class="prog-bar" id="pbar-overall"></div>
         </div>
-        <div class="prog-meta">
-          <span id="ppct">0%</span>
-          <span></span>
+        <div class="dl-bar-label">
+          <span class="dl-bar-title">track</span>
+          <span id="dl-segs" class="dl-bar-pct"></span>
+        </div>
+        <div class="prog-bar-wrap prog-bar-wrap-sm">
+          <div class="prog-bar prog-bar-dim" id="pbar-track"></div>
         </div>
         <div id="log"></div>
       </div>
