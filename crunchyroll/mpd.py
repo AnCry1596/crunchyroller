@@ -24,6 +24,20 @@ def parse_manifest(client: CrunchyrollHttpClient, url: str, debug: bool = False)
 _WIDEVINE_SCHEME_ID = "urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"
 
 
+def get_default_kid(element: ET.Element) -> Optional[bytes]:
+    """Extract a DASH CENC default_KID from an MPD element or its children."""
+    for elem in element.iter():
+        for name, value in elem.attrib.items():
+            if name.rsplit("}", 1)[-1].lower() != "default_kid":
+                continue
+            raw = value.replace("-", "").strip()
+            try:
+                return bytes.fromhex(raw)
+            except ValueError:
+                continue
+    return None
+
+
 def get_pssh(manifest: ET.Element) -> Optional[str]:
     """dig out the cenc pssh string from the manifest.
     handles all CR MPD variants - some shows put ContentProtection under

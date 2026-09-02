@@ -19,7 +19,7 @@ from .drm import get_license
 from .http_client import CrunchyrollHttpClient
 from .integrity import StreamValidator, atomic_finalize
 from .merger import find_ffmpeg, merge_everything
-from .mpd import expand_timeline, get_base_url, get_pssh, parse_manifest
+from .mpd import expand_timeline, get_base_url, get_pssh, get_default_kid, parse_manifest
 from .session_pool import ConcurrencyConfig, SessionPool
 from .stream_assembler import StreamAssembler
 from .types import (
@@ -496,6 +496,46 @@ def download_subs(url: str, pool: Optional[SessionPool] = None) -> str:
     return tmp_path
 
 
+def _is_all_tracks(values: List[str]) -> bool:
+    """Return whether a track selection requests every available track."""
+    return any(value.strip().lower() in {"all", "*"} for value in values)
+
+
+def _unique_locales(values: List[str]) -> List[str]:
+    """Normalize a locale list while retaining its requested order."""
+    result: List[str] = []
+    seen = set()
+    for value in values:
+        locale = value.strip()
+        key = locale.lower()
+        if locale and key not in seen:
+            result.append(locale)
+            seen.add(key)
+    return result
+
+
+def _locale_map(values: Dict[str, object]) -> Dict[str, object]:
+    """Index locale-keyed records case-insensitively."""
+    return {key.strip().lower(): value for key, value in values.items() if key.strip()}
+
+
+def _keys_for_adaptation_set(
+    keys: Dict[bytes, bytes], adaptation_set: Optional[ET.Element]
+) -> Dict[bytes, bytes]:
+    """Return the license key matching an adaptation set's CENC default_KID."""
+    if not keys or adaptation_set is None:
+        return keys
+    kid = get_default_kid(adaptation_set)
+    if kid is None:
+        return keys
+    for candidate, value in keys.items():
+        if candidate.replace(b"-", b"").lower() == kid.lower():
+            return {candidate: value}
+    raise RuntimeError(
+        f"No decryption key was returned for adaptation-set KID {kid.hex()}"
+    )
+
+
 def download_episode(
     client: CrunchyrollHttpClient,
     base_content_id: str,
@@ -509,12 +549,28 @@ def download_episode(
     concurrency_config: Optional[ConcurrencyConfig] = None,
 ) -> str:
     """download all streams for an episode and mux to mkv using shared session pooling"""
+    audio_all = _is_all_tracks(audio_langs)
+    subs_all = _is_all_tracks(subs_langs)
+
+    if audio_all:
+        audio_langs = _unique_locales(
+            [version.audio_locale for version in info.episode_metadata.versions if version.audio_locale]
+        )
+        if not audio_langs:
+            audio_langs = [info.episode_metadata.audio_locale or "ja-JP"]
+    else:
+        audio_langs = _unique_locales(audio_langs)
+
     versions: List[DubVersion] = []
+    versions_by_locale = {
+        version.audio_locale.strip().lower(): version
+        for version in info.episode_metadata.versions
+        if version.audio_locale.strip()
+    }
     for loc in audio_langs:
-        for version in info.episode_metadata.versions:
-            if version.audio_locale == loc:
-                versions.append(version)
-                break
+        version = versions_by_locale.get(loc.lower())
+        if version:
+            versions.append(version)
 
     if not versions:
         if info.episode_metadata.versions:
@@ -552,18 +608,27 @@ def download_episode(
         first_episode = get_episode(client, base_content_id, debug=debug)
         active_streams[base_content_id] = first_episode.token
 
-        if subs_langs and not first_episode.subtitles:
+        if subs_all or (subs_langs and not first_episode.subtitles):
             print("Fetching subtitles from versions...")
             for version in info.episode_metadata.versions:
                 if version.guid != base_content_id:
                     v_ep = get_episode(client, version.guid, debug=debug)
                     active_streams[version.guid] = v_ep.token
-                    if v_ep.subtitles:
+                    if subs_all:
+                        for locale, subtitle in v_ep.subtitles.items():
+                            first_episode.subtitles.setdefault(locale, subtitle)
+                    elif v_ep.subtitles:
                         first_episode.subtitles = v_ep.subtitles
                         break
 
             if not first_episode.subtitles:
                 print("Warning: Failed to fetch subtitles!")
+
+        subtitle_map = _locale_map(first_episode.subtitles)
+        if subs_all:
+            subs_langs = _unique_locales(list(subtitle_map))
+        else:
+            subs_langs = _unique_locales(subs_langs)
 
         output_dir = sanitize_filename(info.episode_metadata.series_title)
         os.makedirs(output_dir, exist_ok=True)
@@ -588,9 +653,10 @@ def download_episode(
 
         sub_tracks: List[MediaTrack] = []
         for loc in subs_langs:
-            if loc in first_episode.subtitles:
+            subtitle = subtitle_map.get(loc.lower())
+            if subtitle and subtitle.url:
                 print(f"Downloading subtitles for {track_title(loc)}...")
-                sub_file = download_subs(first_episode.subtitles[loc].url, pool=shared_pool)
+                sub_file = download_subs(subtitle.url, pool=shared_pool)
                 sub_tracks.append(MediaTrack(file=sub_file, locale=loc))
 
         if sub_tracks:
@@ -639,6 +705,7 @@ def download_episode(
                 video_set = adaptation_sets[0]
 
             print(f"Downloading {track_title(version.audio_locale)} audio...")
+            audio_keys = _keys_for_adaptation_set(keys, audio_set)
             audio_base_url, audio_rep_id = get_base_url(audio_set, False, audio_quality)
             if not audio_base_url or not audio_rep_id:
                 raise RuntimeError(
@@ -649,7 +716,7 @@ def download_episode(
                 audio_base_url,
                 audio_rep_id,
                 audio_set,
-                keys,
+                audio_keys,
                 ep_title=info.title,
                 progress_cb=progress_cb,
                 pool=shared_pool,
@@ -659,6 +726,7 @@ def download_episode(
 
             if i == 0:
                 print("Downloading video...")
+                video_keys = _keys_for_adaptation_set(keys, video_set)
                 video_base_url, video_rep_id = get_base_url(video_set, True, video_quality)
                 if not video_base_url or not video_rep_id:
                     raise RuntimeError(
@@ -668,7 +736,7 @@ def download_episode(
                     video_base_url,
                     video_rep_id,
                     video_set,
-                    keys,
+                    video_keys,
                     ep_title=info.title,
                     progress_cb=progress_cb,
                     pool=shared_pool,
@@ -783,8 +851,19 @@ def download_series(
     concurrency_config: Optional[ConcurrencyConfig] = None,
 ) -> None:
     """grab everything for a series"""
-    primary_audio = audio_langs[0] if audio_langs else "ja-JP"
-    primary_subs = subs_langs[0] if subs_langs else "en-US"
+    # Catalog endpoints require concrete locales. Sending ``all`` here makes
+    # Crunchyroll return only its preferred/default version, which prevents
+    # the later playback requests from discovering every dub.
+    primary_audio = (
+        audio_langs[0]
+        if audio_langs and not _is_all_tracks(audio_langs)
+        else "ja-JP"
+    )
+    primary_subs = (
+        subs_langs[0]
+        if subs_langs and not _is_all_tracks(subs_langs)
+        else "en-US"
+    )
 
     series_data = get_series(client, series_id, primary_audio, primary_subs)
     episodes = series_data.get("episodes", [])
