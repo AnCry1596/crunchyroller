@@ -548,6 +548,7 @@ def download_episode(
     debug: bool = False,
     progress_cb: Optional[Callable] = None,
     concurrency_config: Optional[ConcurrencyConfig] = None,
+    force_download: bool = False,
 ) -> str:
     """download all streams for an episode and mux to mkv using shared session pooling"""
     audio_all = _is_all_tracks(audio_langs)
@@ -615,7 +616,7 @@ def download_episode(
 
     # Check completed output before making playback/subtitle requests. This
     # avoids network work, and avoids hanging on an episode already downloaded.
-    if os.path.exists(output_filename):
+    if os.path.exists(output_filename) and not force_download:
         sz = os.path.getsize(output_filename)
         if sz > 10 * 1024 * 1024:
             print(f"Skipping (file already exists): {output_filename} ({sz / (1024*1024):.1f} MB)")
@@ -625,6 +626,8 @@ def download_episode(
             os.remove(output_filename)
         except Exception:
             pass
+    elif os.path.exists(output_filename) and force_download:
+        print(f"Force download enabled; replacing existing file: {output_filename}")
 
     # Initialize shared SessionPool across all tracks for connection reuse
     shared_pool = SessionPool(
@@ -876,6 +879,7 @@ def download_season(
     debug: bool = False,
     progress_cb: Optional[Callable] = None,
     concurrency_config: Optional[ConcurrencyConfig] = None,
+    force_download: bool = False,
 ) -> None:
     """download an entire season"""
     print(f"Found {len(episodes)} episodes in this season!\n")
@@ -912,6 +916,7 @@ def download_season(
             debug=debug,
             progress_cb=progress_cb,
             concurrency_config=concurrency_config,
+            force_download=force_download,
         )
         print()
 
@@ -927,6 +932,7 @@ def download_series(
     progress_cb: Optional[Callable] = None,
     debug: bool = False,
     concurrency_config: Optional[ConcurrencyConfig] = None,
+    force_download: bool = False,
 ) -> None:
     """grab everything for a series"""
     # Catalog endpoints require concrete locales. Sending ``all`` here makes
@@ -993,5 +999,6 @@ def download_series(
             debug=debug,
             progress_cb=progress_cb,
             concurrency_config=concurrency_config,
+            force_download=force_download,
         )
         print()

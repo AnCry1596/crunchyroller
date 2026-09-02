@@ -62,6 +62,7 @@ STATE = {
         "audio_quality": initial_cfg.get("audio_quality", "192k"),
         "audio_lang":    initial_cfg.get("audio_lang", "ja-JP"),
         "subs_lang":     initial_cfg.get("subs_lang", "en-US"),
+        "force_download": bool(initial_cfg.get("force_download", False)),
     },
     "download": {
         "status":      "idle",
@@ -87,7 +88,7 @@ def _log(msg):
             STATE["download"]["log"].pop(0)
 
 
-def _run_download(items, vq, aq, al, sl):
+def _run_download(items, vq, aq, al, sl, force_download=False):
     ep_total = len(items)
     with LOCK:
         STATE["download"].update(
@@ -154,6 +155,7 @@ def _run_download(items, vq, aq, al, sl):
                 client=client, base_content_id=ep_id, info=info,
                 audio_langs=a_langs, subs_langs=s_langs,
                 video_quality=vq, audio_quality=aq, progress_cb=_cb,
+                force_download=force_download,
             )
             with LOCK:
                 STATE["download"]["overall_pct"] = round(((idx + 1) / ep_total) * 100, 1)
@@ -285,7 +287,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         elif path == "/api/config":
             with LOCK:
-                for k in ("video_quality","audio_quality","audio_lang","subs_lang"):
+                for k in ("video_quality","audio_quality","audio_lang","subs_lang","force_download"):
                     if k in data: STATE["config"][k] = data[k]
             save_config(STATE["config"])
             self._json({"success": True})
@@ -334,6 +336,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 data.get("audio_quality", c["audio_quality"]),
                 data.get("audio_lang", c["audio_lang"]),
                 data.get("subs_lang", c["subs_lang"]),
+                bool(data.get("force_download", c.get("force_download", False))),
             )).start()
             self._json({"success": True})
         else:

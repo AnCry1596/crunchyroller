@@ -45,6 +45,8 @@ function applyState(state) {
     const el = document.getElementById(id);
     if (el && state.config[key]) el.value = state.config[key];
   });
+  const forceDownload = document.getElementById('force-download');
+  if (forceDownload) forceDownload.checked = Boolean(state.config.force_download);
 
   // if a download is running, start polling progress
   if (state.download.status === 'running') startPolling();
@@ -102,6 +104,7 @@ async function saveCfg() {
     audio_quality: document.getElementById('aq').value,
     audio_lang: document.getElementById('al').value,
     subs_lang: document.getElementById('sl').value,
+    force_download: document.getElementById('force-download').checked,
   });
 }
 
@@ -219,6 +222,7 @@ async function startDl() {
     audio_quality: document.getElementById('aq').value,
     audio_lang: document.getElementById('al').value,
     subs_lang: document.getElementById('sl').value,
+    force_download: document.getElementById('force-download').checked,
   });
 
   if (!res.success) {

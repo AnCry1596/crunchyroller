@@ -127,6 +127,9 @@ python main.py --url "https://www.crunchyroll.com/watch/..." --audio-lang "ja-JP
 # Download every available audio dub and subtitle track
 python main.py --url "https://www.crunchyroll.com/watch/..." --audio-lang all --subs-lang all
 
+# Force redownload and replace an existing MKV
+python main.py --url "https://www.crunchyroll.com/watch/..." --force-download
+
 # Download an entire season
 python main.py --url "https://www.crunchyroll.com/series/..." --season 1
 
@@ -158,6 +161,7 @@ python main.py --etp-rt "YOUR_ETP_RT_COOKIE" --url "https://www.crunchyroll.com/
 | `--season` | Integer | `0` | Season number filter (used for series links; `0` downloads all) |
 | `--etp-rt` | String | `""` | Crunchyroll `etp_rt` authentication cookie value |
 | `--debug-manifest`| Flag | `False` | Log raw episode playback JSON and DASH manifest XML |
+| `--force-download` | Flag | `False` | Redownload completed episodes and atomically replace existing MKV files |
 
 ---
 
