@@ -190,6 +190,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", len(body))
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.end_headers()
         self.wfile.write(body)
 
@@ -241,6 +244,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
             self.end_headers()
             self.wfile.write(content)
         except Exception:
@@ -299,15 +305,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             try:
                 client = CrunchyrollHttpClient(STATE["etp_rt"])
                 kind, cid = parse_url_type(url)
-                al, sl = STATE["config"]["audio_lang"], STATE["config"]["subs_lang"]
-                api_audio = al if al.strip().lower() not in {"all", "*"} else "ja-JP"
-                api_subs = sl if sl.strip().lower() not in {"all", "*"} else "en-US"
+                al, sl = STATE["config"].get("audio_lang", "ja-JP"), STATE["config"].get("subs_lang", "en-US")
+                al_list = [x.strip() for x in al.split(",") if x.strip()]
+                sl_list = [x.strip() for x in sl.split(",") if x.strip()]
+                primary_al = al_list[0] if al_list else "ja-JP"
+                primary_sl = sl_list[0] if sl_list else "en-US"
+                api_audio = primary_al if primary_al.lower() not in {"all", "*"} else "ja-JP"
+                api_subs = primary_sl if primary_sl.lower() not in {"all", "*"} else "en-US"
+                avail_audios = []
                 if kind == "episode":
                     info = get_episode_info(client, cid)
                     seasons = [{"season_number": info.episode_metadata.season_number,
                         "episodes": [{"id":cid,"title":info.title,"episode_number":info.episode_metadata.episode_number,
                                       "season_number":info.episode_metadata.season_number,"series_title":info.episode_metadata.series_title}]}]
                     title = info.episode_metadata.series_title
+                    avail_audios = [v.audio_locale for v in info.episode_metadata.versions if v.audio_locale]
                 else:
                     s = get_series(client, cid, api_audio, api_subs)
                     title = s.get("title","")
@@ -317,7 +329,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         seasons.append({"season_number":sn.season_number,
                             "episodes":[{"id":e.id,"title":e.title,"episode_number":e.episode_number,
                                          "season_number":e.season_number,"series_title":e.series_title} for e in eps]})
-                self._json({"success":True,"title":title,"seasons":seasons})
+                        if getattr(sn, "audio_locale", None) and sn.audio_locale not in avail_audios:
+                            avail_audios.append(sn.audio_locale)
+                self._json({"success":True,"title":title,"seasons":seasons,"avail_audios":avail_audios})
             except Exception as e:
                 self._json({"success":False,"error":str(e)},500)
 

@@ -6,7 +6,7 @@
   <title>crunchyroller</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/style.css?v=2.1">
 </head>
 <body>
 
@@ -48,46 +48,23 @@
         <div class="grid2">
           <div class="field">
             <label>video</label>
-            <select id="vq" onchange="saveCfg()">
-              <option value="1080p">1080p</option>
-              <option value="720p">720p</option>
-              <option value="480p">480p</option>
-              <option value="360p">360p</option>
-              <option value="240p">240p</option>
-            </select>
+            <div id="dd-video" class="select-dropdown"></div>
+            <input type="hidden" id="vq" value="1080p">
           </div>
           <div class="field">
             <label>audio</label>
-            <select id="aq" onchange="saveCfg()">
-              <option value="192k">192k</option>
-              <option value="96k">96k</option>
-            </select>
+            <div id="dd-audio-qual" class="select-dropdown"></div>
+            <input type="hidden" id="aq" value="192k">
           </div>
           <div class="field">
             <label>audio language</label>
-            <select id="al" onchange="saveCfg()">
-              <option value="all">All available</option>
-              <option value="ja-JP">Japanese</option>
-              <option value="en-US">English</option>
-              <option value="de-DE">German</option>
-              <option value="fr-FR">French</option>
-              <option value="es-419">Spanish</option>
-              <option value="pt-BR">Portuguese</option>
-              <option value="ko-KR">Korean</option>
-            </select>
+            <div id="dd-audio" class="select-dropdown"></div>
+            <input type="hidden" id="al" value="ja-JP">
           </div>
           <div class="field">
             <label>subtitles</label>
-            <select id="sl" onchange="saveCfg()">
-              <option value="all">All available</option>
-              <option value="en-US">English</option>
-              <option value="de-DE">German</option>
-              <option value="fr-FR">French</option>
-              <option value="es-419">Spanish</option>
-              <option value="pt-BR">Portuguese</option>
-              <option value="ru-RU">Russian</option>
-              <option value="ar-SA">Arabic</option>
-            </select>
+            <div id="dd-subs" class="select-dropdown"></div>
+            <input type="hidden" id="sl" value="en-US">
           </div>
         </div>
       </div>
@@ -106,13 +83,16 @@
 
         <div id="tree">
           <hr class="div">
-          <div class="ser-title" id="ser-title"></div>
+          <div class="ser-title-row">
+            <div class="ser-title" id="ser-title"></div>
+            <div class="tree-badge" id="tree-selected-count">0 selected</div>
+          </div>
           <div id="sn-list"></div>
           <hr class="div">
           <div class="row" style="justify-content:flex-end">
             <button class="btn-s" onclick="pickAll(true)">all</button>
             <button class="btn-s" onclick="pickAll(false)">none</button>
-            <button onclick="startDl()">download</button>
+            <button id="dl-btn" onclick="startDl()">download</button>
           </div>
         </div>
       </div>
@@ -147,7 +127,7 @@
   </main>
 
   <div id="toast"></div>
-  <script src="/js/particles.js"></script>
-  <script src="/js/app.js"></script>
+  <script src="/js/particles.js?v=2.1"></script>
+  <script src="/js/app.js?v=2.1"></script>
 </body>
 </html>

@@ -551,10 +551,12 @@ def _keys_for_adaptation_set(
         else:
             selected[match[0]] = match[1]
     if missing:
-        raise RuntimeError(
-            "No decryption key was returned for adaptation-set KID(s): "
+        print(
+            "Warning: Exact adaptation-set KID(s) not matched in license keys, "
+            "falling back to all keys: "
             + ", ".join(missing)
         )
+        return keys
     return selected
 
 
@@ -646,17 +648,13 @@ def download_episode(
         try:
             os.remove(output_filename)
         except Exception:
-            pass
-    elif os.path.exists(output_filename) and force_download:
-        print(f"Force download enabled; replacing existing file: {output_filename}")
-
+        print(
+            "Warning: Exact adaptation-set KID(s) not matched in license keys, "
+            "falling back to all keys: "
+            + ", ".join(missing)
+        )
+        return keys
     # Initialize shared SessionPool across all tracks for connection reuse
-    shared_pool = SessionPool(
-        config=concurrency_config
-        or ConcurrencyConfig(
-            pool_size=64,
-            min_workers=8,
-            max_workers=48,
             initial_workers=24,
             aimd_enabled=True,
             hedging_enabled=True,
@@ -675,7 +673,9 @@ def download_episode(
         playback_cache[base_content_id] = first_episode
         active_streams[base_content_id] = first_episode.token
 
-        if subs_all or (subs_langs and not first_episode.subtitles):
+        subtitle_map = _locale_map(first_episode.subtitles)
+        needs_more_subs = subs_all or any(loc.lower() not in subtitle_map for loc in subs_langs)
+        if needs_more_subs:
             print("Fetching subtitles from versions...")
             for version in info.episode_metadata.versions:
                 if version.guid != base_content_id:
@@ -688,11 +688,10 @@ def download_episode(
                     )
                     playback_cache[version.guid] = v_ep
                     active_streams[version.guid] = v_ep.token
-                    if subs_all:
-                        for locale, subtitle in v_ep.subtitles.items():
-                            first_episode.subtitles.setdefault(locale, subtitle)
-                    elif v_ep.subtitles:
-                        first_episode.subtitles = v_ep.subtitles
+                    for locale, subtitle in v_ep.subtitles.items():
+                        first_episode.subtitles.setdefault(locale, subtitle)
+                    subtitle_map = _locale_map(first_episode.subtitles)
+                    if not subs_all and all(loc.lower() in subtitle_map for loc in subs_langs):
                         break
 
             if not first_episode.subtitles:
@@ -700,7 +699,7 @@ def download_episode(
 
         subtitle_map = _locale_map(first_episode.subtitles)
         if subs_all:
-            subs_langs = _unique_locales(list(subtitle_map))
+            subs_langs = _unique_locales(list(first_episode.subtitles.keys()))
         else:
             subs_langs = _unique_locales(subs_langs)
 
@@ -723,10 +722,11 @@ def download_episode(
         for loc in subs_langs:
             subtitle = subtitle_map.get(loc.lower())
             if subtitle and subtitle.url:
-                print(f"Downloading subtitles for {track_title(loc)}...")
+                actual_locale = getattr(subtitle, "language", None) or loc
+                print(f"Downloading subtitles for {track_title(actual_locale)}...")
                 sub_file = download_subs(subtitle.url, pool=shared_pool)
                 sub_tracks.append(
-                    MediaTrack(file=sub_file, locale=loc, is_default=len(sub_tracks) == 0)
+                    MediaTrack(file=sub_file, locale=actual_locale, is_default=len(sub_tracks) == 0)
                 )
 
         if sub_tracks:
@@ -923,7 +923,7 @@ def download_season(
     for i, ep in enumerate(episodes):
         print(f"=== [{i+1}/{len(episodes)}] {ep.title} ===")
         episode_versions = ep.versions
-        if _is_all_tracks(audio_langs) and ep.id:
+        if (len(audio_langs) > 1 or _is_all_tracks(audio_langs)) and ep.id:
             try:
                 episode_info = get_episode_info(client, ep.id)
                 if episode_info.episode_metadata.versions:
@@ -1003,7 +1003,7 @@ def download_series(
     for i, ep in enumerate(episodes):
         print(f"=== [{i+1}/{len(episodes)}] {ep.series_title} S{ep.season_number:02d}E{ep.episode_number:02d} - {ep.title} ===")
         episode_versions = ep.versions
-        if _is_all_tracks(audio_langs) and ep.id:
+        if (len(audio_langs) > 1 or _is_all_tracks(audio_langs)) and ep.id:
             # The season endpoint may expose only the preferred audio version.
             # The episode object contains the complete dub-version list.
             try:
