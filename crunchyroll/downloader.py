@@ -604,6 +604,28 @@ def download_episode(
         f"subtitles=[{', '.join(track_title(locale) for locale in subs_langs) or 'all available'}]"
     )
 
+    output_dir = sanitize_filename(info.episode_metadata.series_title)
+    os.makedirs(output_dir, exist_ok=True)
+    filename = (
+        f"{sanitize_filename(info.episode_metadata.series_title)} "
+        f"S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d} - "
+        f"{sanitize_filename(info.title)} [{video_quality}].mkv"
+    )
+    output_filename = os.path.join(output_dir, filename)
+
+    # Check completed output before making playback/subtitle requests. This
+    # avoids network work, and avoids hanging on an episode already downloaded.
+    if os.path.exists(output_filename):
+        sz = os.path.getsize(output_filename)
+        if sz > 10 * 1024 * 1024:
+            print(f"Skipping (file already exists): {output_filename} ({sz / (1024*1024):.1f} MB)")
+            return output_filename
+        print(f"Existing file is corrupted/partial ({sz} bytes), re-downloading...")
+        try:
+            os.remove(output_filename)
+        except Exception:
+            pass
+
     # Initialize shared SessionPool across all tracks for connection reuse
     shared_pool = SessionPool(
         config=concurrency_config
@@ -661,27 +683,6 @@ def download_episode(
             print(f"Warning: Audio tracks unavailable: {', '.join(missing_audio)}")
         if missing_subtitles:
             print(f"Warning: Subtitle tracks unavailable: {', '.join(missing_subtitles)}")
-
-        output_dir = sanitize_filename(info.episode_metadata.series_title)
-        os.makedirs(output_dir, exist_ok=True)
-        filename = (
-            f"{sanitize_filename(info.episode_metadata.series_title)} "
-            f"S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d} - "
-            f"{sanitize_filename(info.title)} [{video_quality}].mkv"
-        )
-        output_filename = os.path.join(output_dir, filename)
-
-        if os.path.exists(output_filename):
-            sz = os.path.getsize(output_filename)
-            if sz > 10 * 1024 * 1024:
-                print(f"Skipping (file already exists): {output_filename} ({sz / (1024*1024):.1f} MB)")
-                return output_filename
-            else:
-                print(f"Existing file is corrupted/partial ({sz} bytes), re-downloading...")
-                try:
-                    os.remove(output_filename)
-                except Exception:
-                    pass
 
         sub_tracks: List[MediaTrack] = []
         for loc in subs_langs:
