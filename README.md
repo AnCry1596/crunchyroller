@@ -124,6 +124,9 @@ python main.py --url "https://www.crunchyroll.com/watch/..." --video-quality 108
 # Download with multiple audio dubs and subtitle languages
 python main.py --url "https://www.crunchyroll.com/watch/..." --audio-lang "ja-JP,en-US" --subs-lang "en-US,es-419"
 
+# Download every available audio dub and subtitle track
+python main.py --url "https://www.crunchyroll.com/watch/..." --audio-lang all --subs-lang all
+
 # Download an entire season
 python main.py --url "https://www.crunchyroll.com/series/..." --season 1
 
@@ -137,6 +140,9 @@ python main.py --file urls.txt
 python main.py --etp-rt "YOUR_ETP_RT_COOKIE" --url "https://www.crunchyroll.com/watch/..."
 ```
 
+> [!NOTE]
+> When multiple audio or subtitle tracks are downloaded, the first selected track of each type is marked as the default in the generated MKV file. Other tracks remain available for selection. With `all`, the default follows the order returned by Crunchyroll's metadata.
+
 ### CLI Options
 
 | Flag | Type | Default | Description |
@@ -145,8 +151,8 @@ python main.py --etp-rt "YOUR_ETP_RT_COOKIE" --url "https://www.crunchyroll.com/
 | `--browser` | Flag | `False` | Open GUI in default web browser instead of native window |
 | `--url` | String | `""` | URL of the episode, season, or series to download |
 | `--file` | String | `""` | Path to a text file containing URLs (one per line) |
-| `--audio-lang` | String | `ja-JP` | Audio language(s), comma-separated (e.g. `ja-JP,en-US`). First is default. |
-| `--subs-lang` | String | `en-US` | Subtitle language(s), comma-separated (e.g. `en-US,es-419`). First is default. |
+| `--audio-lang` | String | `ja-JP` | Audio language(s), comma-separated (e.g. `ja-JP,en-US`), or `all` for every available dub. First is default. |
+| `--subs-lang` | String | `en-US` | Subtitle language(s), comma-separated (e.g. `en-US,es-419`), or `all` for every available subtitle. First is default. |
 | `--video-quality` | String | `1080p` | Target video resolution (`1080p`, `720p`, `480p`, `360p`) |
 | `--audio-quality` | String | `192k` | Target audio bitrate (`192k`, `96k`) |
 | `--season` | Integer | `0` | Season number filter (used for series links; `0` downloads all) |

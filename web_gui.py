@@ -298,6 +298,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 client = CrunchyrollHttpClient(STATE["etp_rt"])
                 kind, cid = parse_url_type(url)
                 al, sl = STATE["config"]["audio_lang"], STATE["config"]["subs_lang"]
+                api_audio = al if al.strip().lower() not in {"all", "*"} else "ja-JP"
+                api_subs = sl if sl.strip().lower() not in {"all", "*"} else "en-US"
                 if kind == "episode":
                     info = get_episode_info(client, cid)
                     seasons = [{"season_number": info.episode_metadata.season_number,
@@ -305,11 +307,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                       "season_number":info.episode_metadata.season_number,"series_title":info.episode_metadata.series_title}]}]
                     title = info.episode_metadata.series_title
                 else:
-                    s = get_series(client, cid, al, sl)
+                    s = get_series(client, cid, api_audio, api_subs)
                     title = s.get("title","")
                     seasons = []
                     for sn in s.get("seasons",[]):
-                        eps = get_season_episodes(client, sn.id, al, sl)
+                        eps = get_season_episodes(client, sn.id, api_audio, api_subs)
                         seasons.append({"season_number":sn.season_number,
                             "episodes":[{"id":e.id,"title":e.title,"episode_number":e.episode_number,
                                          "season_number":e.season_number,"series_title":e.series_title} for e in eps]})

@@ -140,8 +140,10 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
         audio_langs = ["ja-JP"]
 
     subs_langs = parse_langs(args.subs_lang)
-    primary_audio = audio_langs[0]
-    primary_subs = subs_langs[0] if subs_langs else "en-US"
+    primary_audio = audio_langs[0] if audio_langs[0].lower() not in {"all", "*"} else "ja-JP"
+    primary_subs = (
+        subs_langs[0] if subs_langs and subs_langs[0].lower() not in {"all", "*"} else "en-US"
+    )
 
     video_quality = getattr(args, "quality_video", None) or getattr(args, "video_quality", "1080p")
     audio_quality = getattr(args, "quality_audio", None) or getattr(args, "audio_quality", "192k")
@@ -208,13 +210,13 @@ def main() -> None:
         "--audio-lang",
         type=str,
         default="ja-JP",
-        help='Audio language(s), comma-separated for multiple (e.g. "ja-JP,en-US"). First is default.',
+        help='Audio language(s), comma-separated (e.g. "ja-JP,en-US"), or "all" for every available dub. First is default.',
     )
     parser.add_argument(
         "--subs-lang",
         type=str,
         default="en-US",
-        help='Subtitle language(s), comma-separated for multiple (e.g. "en-US,es-419"). First is default.',
+        help='Subtitle language(s), comma-separated (e.g. "en-US,es-419"), or "all" for every available subtitle.',
     )
     parser.add_argument("--video-quality", type=str, default="1080p", help="Video quality (1080p, 720p, 480p, 360p)")
     parser.add_argument("--audio-quality", type=str, default="192k", help="Audio quality (192k, 96k)")

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -72,3 +74,4 @@ class Season:
 class MediaTrack:
     file: str
     locale: str
+    is_default: bool = False

@@ -188,7 +188,10 @@ class SessionPool:
         retry_strategy = Retry(
             total=self.max_retries,
             backoff_factor=self.backoff_factor,
-            status_forcelist=[420, 429, 500, 502, 503, 504],
+            # HTTP 420 is handled by CrunchyrollHttpClient, which reports
+            # the cooldown to the user. Retrying it here hides progress and
+            # can make metadata requests appear to hang.
+            status_forcelist=[429, 500, 502, 503, 504],
             raise_on_status=False,
         )
         adapter = TCPKeepAliveAdapter(

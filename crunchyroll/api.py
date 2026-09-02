@@ -1,5 +1,6 @@
 import json
 from typing import List, Optional, Tuple, Dict, Any
+from urllib.parse import quote, urlparse
 
 from .http_client import CrunchyrollHttpClient
 from .types import (
@@ -11,6 +12,38 @@ from .types import (
     SeasonEpisode,
     Subtitle,
 )
+
+
+_SUBTITLE_LOCALE_ALIASES = {
+    "en": "en-US",
+    "de": "de-DE",
+    "fr": "fr-FR",
+    "es": "es-419",
+    "pt": "pt-BR",
+    "id": "id-ID",
+    "vi": "vi-VN",
+    "th": "th-TH",
+    "english": "en-US",
+    "bahasa indonesia": "id-ID",
+    "tiếng việt": "vi-VN",
+    "tieng viet": "vi-VN",
+    "ไทย": "th-TH",
+    "thai": "th-TH",
+}
+
+
+def _subtitle_locale(raw_key: object, raw_language: object) -> str:
+    """Return a stable locale key from a subtitle API record."""
+    key = str(raw_key or "").strip()
+    language = str(raw_language or "").strip()
+    key_lower = key.lower()
+    language_lower = language.lower()
+
+    if key_lower in {"none", "und", "unknown"} or not key:
+        return _SUBTITLE_LOCALE_ALIASES.get(language_lower, "")
+    if key_lower in _SUBTITLE_LOCALE_ALIASES:
+        return _SUBTITLE_LOCALE_ALIASES[key_lower]
+    return key
 
 
 
@@ -68,7 +101,36 @@ def get_episode(
     if isinstance(subtitles_raw, dict):
         for lang, s_info in subtitles_raw.items():
             if isinstance(s_info, dict):
-                subtitles[lang] = Subtitle(language=s_info.get("language", lang), url=s_info.get("url", ""))
+                subtitle_url = str(s_info.get("url", "") or "").strip()
+                parsed_url = urlparse(subtitle_url)
+                if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                    # Crunchyroll may include placeholder entries such as
+                    # "none" with no URL; they are not downloadable tracks.
+                    continue
+                locale = _subtitle_locale(lang, s_info.get("language", lang))
+                if not locale:
+                    continue
+                subtitles[locale] = Subtitle(
+                    language=s_info.get("language", locale),
+                    url=subtitle_url,
+                )
+    elif isinstance(subtitles_raw, list):
+        for s_info in subtitles_raw:
+            if not isinstance(s_info, dict):
+                continue
+            subtitle_url = str(s_info.get("url", "") or "").strip()
+            parsed_url = urlparse(subtitle_url)
+            if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+                continue
+            locale = _subtitle_locale(
+                s_info.get("locale") or s_info.get("lang") or s_info.get("language"),
+                s_info.get("language"),
+            )
+            if locale:
+                subtitles[locale] = Subtitle(
+                    language=s_info.get("language", locale),
+                    url=subtitle_url,
+                )
 
     token = data.get("token", "")
     return PlaybackStream(manifest_url=manifest_url, subtitles=subtitles, token=token)
@@ -258,8 +320,23 @@ def get_series(
 def delete_stream(
     client: CrunchyrollHttpClient, content_id: str, video_token: str
 ) -> bool:
-    """tell crunchyroll we're done watching so they don't get mad"""
-    url = f"https://www.crunchyroll.com/playback/v3/{content_id}/delete"
-    headers = {"X-Cr-Video-Token": video_token}
-    resp = client.do_request("DELETE", url, headers=headers)
-    return resp.status_code == 200
+    """Release a playback session using its content ID and playback token.
+
+    Cleanup is intentionally idempotent: an expired or already-removed
+    playback session is considered successfully cleaned up.
+    """
+    if not content_id or not video_token:
+        return False
+
+    url = (
+        "https://www.crunchyroll.com/playback/v1/token/"
+        f"{quote(content_id, safe='')}/{quote(video_token, safe='')}"
+    )
+    headers = {"Accept": "*/*"}
+    try:
+        resp = client.do_request("DELETE", url, headers=headers)
+    except Exception:
+        # Stream cleanup must never hide the original download failure.
+        return False
+
+    return 200 <= resp.status_code < 300 or resp.status_code in {401, 404, 410}

@@ -99,13 +99,22 @@ def merge_everything(
             f"-metadata:s:s:{j}", f"title={title}",
         ])
 
-    # Track dispositions (default on first audio/sub, 0 on others)
+    # Track dispositions. Explicit defaults take precedence; retain the
+    # historical first-track fallback for callers that do not set is_default.
+    default_audio_index = next(
+        (i for i, track in enumerate(audio_tracks) if track.is_default),
+        0 if audio_tracks else -1,
+    )
     for i in range(len(audio_tracks)):
-        disposition = "default" if i == 0 else "0"
+        disposition = "default" if i == default_audio_index else "0"
         args.extend([f"-disposition:a:{i}", disposition])
 
+    default_subtitle_index = next(
+        (i for i, track in enumerate(sub_tracks) if track.is_default),
+        0 if sub_tracks else -1,
+    )
     for j in range(len(sub_tracks)):
-        disposition = "default" if j == 0 else "0"
+        disposition = "default" if j == default_subtitle_index else "0"
         args.extend([f"-disposition:s:{j}", disposition])
 
     # Global metadata tags (fixed season_number and episode_number)

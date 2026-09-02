@@ -746,6 +746,8 @@ async def cmd_download(interaction: discord.Interaction, url: str):
     sl = cfg.get("subs_lang", "en-US")
     a_langs = [x.strip() for x in al.split(",") if x.strip()] or ["ja-JP"]
     s_langs = [x.strip() for x in sl.split(",") if x.strip()] or ["en-US"]
+    api_audio = a_langs[0] if a_langs[0].lower() not in {"all", "*"} else "ja-JP"
+    api_subs = s_langs[0] if s_langs[0].lower() not in {"all", "*"} else "en-US"
 
     try:
         client = CrunchyrollHttpClient(etp_rt)
@@ -778,7 +780,7 @@ async def cmd_download(interaction: discord.Interaction, url: str):
             await interaction.followup.send(embed=embed, view=view)
 
         elif kind == "series":
-            series_meta = get_series(client, cid, a_langs[0], s_langs[0])
+            series_meta = get_series(client, cid, api_audio, api_subs)
             title = series_meta.get("title", cid)
             seasons = series_meta.get("seasons", [])
 
@@ -790,7 +792,7 @@ async def cmd_download(interaction: discord.Interaction, url: str):
             valid_seasons: List[Season] = []
 
             for s in seasons:
-                eps = get_season_episodes(client, s.id, a_langs[0], s_langs[0])
+                eps = get_season_episodes(client, s.id, api_audio, api_subs)
                 if eps:
                     season_episodes_map[s.id] = eps
                     valid_seasons.append(s)
@@ -812,7 +814,7 @@ async def cmd_download(interaction: discord.Interaction, url: str):
             await interaction.followup.send(embed=view.build_embed(), view=view)
 
         elif kind == "season":
-            eps = get_season_episodes(client, cid, a_langs[0], s_langs[0])
+            eps = get_season_episodes(client, cid, api_audio, api_subs)
             if not eps:
                 await interaction.followup.send("❌ No episodes found for this season.")
                 return
@@ -822,7 +824,7 @@ async def cmd_download(interaction: discord.Interaction, url: str):
             pseudo_season = Season(
                 id=cid,
                 season_number=sn_num,
-                audio_locale=a_langs[0],
+                audio_locale=api_audio,
                 title=f"Season {sn_num}",
             )
             view = EpisodePickerView(
