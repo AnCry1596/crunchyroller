@@ -1,6 +1,6 @@
 import json
 from typing import List, Optional, Tuple, Dict, Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from .http_client import CrunchyrollHttpClient
 from .types import (
@@ -320,8 +320,23 @@ def get_series(
 def delete_stream(
     client: CrunchyrollHttpClient, content_id: str, video_token: str
 ) -> bool:
-    """tell crunchyroll we're done watching so they don't get mad"""
-    url = f"https://www.crunchyroll.com/playback/v3/{content_id}/delete"
-    headers = {"X-Cr-Video-Token": video_token}
-    resp = client.do_request("DELETE", url, headers=headers)
-    return resp.status_code == 200
+    """Release a playback session using its content ID and playback token.
+
+    Cleanup is intentionally idempotent: an expired or already-removed
+    playback session is considered successfully cleaned up.
+    """
+    if not content_id or not video_token:
+        return False
+
+    url = (
+        "https://www.crunchyroll.com/playback/v1/token/"
+        f"{quote(content_id, safe='')}/{quote(video_token, safe='')}"
+    )
+    headers = {"Accept": "*/*"}
+    try:
+        resp = client.do_request("DELETE", url, headers=headers)
+    except Exception:
+        # Stream cleanup must never hide the original download failure.
+        return False
+
+    return 200 <= resp.status_code < 300 or resp.status_code in {401, 404, 410}

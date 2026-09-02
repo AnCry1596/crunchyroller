@@ -27,6 +27,7 @@ from .types import (
     EpisodeInfo,
     EpisodeMetadata,
     MediaTrack,
+    PlaybackStream,
     SeasonEpisode,
 )
 from .utils import sanitize_filename, track_title
@@ -587,6 +588,7 @@ def download_episode(
             )
 
     active_streams: Dict[str, str] = {}
+    playback_cache: Dict[str, PlaybackStream] = {}
     print(
         f"Downloading: {info.title} (S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d}) from {info.episode_metadata.series_title}"
     )
@@ -606,6 +608,7 @@ def download_episode(
 
     try:
         first_episode = get_episode(client, base_content_id, debug=debug)
+        playback_cache[base_content_id] = first_episode
         active_streams[base_content_id] = first_episode.token
 
         if subs_all or (subs_langs and not first_episode.subtitles):
@@ -613,6 +616,7 @@ def download_episode(
             for version in info.episode_metadata.versions:
                 if version.guid != base_content_id:
                     v_ep = get_episode(client, version.guid, debug=debug)
+                    playback_cache[version.guid] = v_ep
                     active_streams[version.guid] = v_ep.token
                     if subs_all:
                         for locale, subtitle in v_ep.subtitles.items():
@@ -672,8 +676,11 @@ def download_episode(
             content_id = base_content_id
             if i > 0:
                 content_id = version.guid
-                ep = get_episode(client, content_id, debug=debug)
-                active_streams[content_id] = ep.token
+                ep = playback_cache.get(content_id)
+                if ep is None:
+                    ep = get_episode(client, content_id, debug=debug)
+                    playback_cache[content_id] = ep
+                    active_streams[content_id] = ep.token
 
             manifest = parse_manifest(client, ep.manifest_url, debug=debug)
             pssh = get_pssh(manifest)
@@ -743,9 +750,15 @@ def download_episode(
                     track_type="video",
                 )
 
-            success = delete_stream(client, version.guid, ep.token)
-            if not success:
-                print("Failed to delete stream (session token might expired)")
+            # The first playback session belongs to base_content_id, not
+            # necessarily to the first metadata version GUID. Skip a cached
+            # session if subtitle discovery already released it.
+            if content_id in active_streams:
+                success = delete_stream(client, content_id, ep.token)
+                if not success:
+                    print("Failed to delete stream (session token might expired)")
+                else:
+                    active_streams.pop(content_id, None)
 
         if not video_file:
             raise RuntimeError("No video file downloaded!")
@@ -794,7 +807,8 @@ def download_episode(
         shared_pool.close()
         print("Cleaning up...")
         for content_id, token in active_streams.items():
-            delete_stream(client, content_id, token)
+            if content_id and token:
+                delete_stream(client, content_id, token)
 
 
 def download_season(
