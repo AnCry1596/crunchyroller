@@ -74,3 +74,4 @@ class Season:
 class MediaTrack:
     file: str
     locale: str
+    is_default: bool = False

@@ -662,7 +662,9 @@ def download_episode(
             if subtitle and subtitle.url:
                 print(f"Downloading subtitles for {track_title(loc)}...")
                 sub_file = download_subs(subtitle.url, pool=shared_pool)
-                sub_tracks.append(MediaTrack(file=sub_file, locale=loc))
+                sub_tracks.append(
+                    MediaTrack(file=sub_file, locale=loc, is_default=len(sub_tracks) == 0)
+                )
 
         if sub_tracks:
             print("Downloaded subtitles!")
@@ -730,7 +732,13 @@ def download_episode(
                 pool=shared_pool,
                 track_type="audio",
             )
-            audio_tracks.append(MediaTrack(file=audio_file, locale=version.audio_locale))
+            audio_tracks.append(
+                MediaTrack(
+                    file=audio_file,
+                    locale=version.audio_locale,
+                    is_default=len(audio_tracks) == 0,
+                )
+            )
 
             if i == 0:
                 print("Downloading video...")

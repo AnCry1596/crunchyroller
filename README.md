@@ -140,6 +140,9 @@ python main.py --file urls.txt
 python main.py --etp-rt "YOUR_ETP_RT_COOKIE" --url "https://www.crunchyroll.com/watch/..."
 ```
 
+> [!NOTE]
+> When multiple audio or subtitle tracks are downloaded, the first selected track of each type is marked as the default in the generated MKV file. Other tracks remain available for selection. With `all`, the default follows the order returned by Crunchyroll's metadata.
+
 ### CLI Options
 
 | Flag | Type | Default | Description |
