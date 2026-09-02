@@ -574,6 +574,11 @@ def download_episode(
         if version:
             versions.append(version)
 
+    missing_audio = [
+        locale for locale in audio_langs
+        if locale.lower() not in {version.audio_locale.lower() for version in versions}
+    ]
+
     if not versions:
         if info.episode_metadata.versions:
             versions.append(info.episode_metadata.versions[0])
@@ -593,6 +598,11 @@ def download_episode(
     print(
         f"Downloading: {info.title} (S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d}) from {info.episode_metadata.series_title}"
     )
+    print(
+        "Tracks planned: "
+        f"audio=[{', '.join(track_title(version.audio_locale) for version in versions)}], "
+        f"subtitles=[{', '.join(track_title(locale) for locale in subs_langs) or 'all available'}]"
+    )
 
     # Initialize shared SessionPool across all tracks for connection reuse
     shared_pool = SessionPool(
@@ -608,6 +618,7 @@ def download_episode(
     )
 
     try:
+        print("Requesting playback stream...")
         first_episode = get_episode(client, base_content_id, debug=debug)
         playback_cache[base_content_id] = first_episode
         active_streams[base_content_id] = first_episode.token
@@ -616,6 +627,7 @@ def download_episode(
             print("Fetching subtitles from versions...")
             for version in info.episode_metadata.versions:
                 if version.guid != base_content_id:
+                    print(f"Checking subtitle source: {track_title(version.audio_locale)}...")
                     v_ep = get_episode(client, version.guid, debug=debug)
                     playback_cache[version.guid] = v_ep
                     active_streams[version.guid] = v_ep.token
@@ -634,6 +646,21 @@ def download_episode(
             subs_langs = _unique_locales(list(subtitle_map))
         else:
             subs_langs = _unique_locales(subs_langs)
+
+        available_subtitles = list(subtitle_map)
+        missing_subtitles = [
+            locale for locale in subs_langs
+            if locale.lower() not in {available.lower() for available in available_subtitles}
+        ]
+        print(
+            "Tracks selected: "
+            f"audio=[{', '.join(track_title(version.audio_locale) for version in versions) or 'none'}], "
+            f"subtitles=[{', '.join(track_title(locale) for locale in subs_langs) or 'none'}]"
+        )
+        if missing_audio:
+            print(f"Warning: Audio tracks unavailable: {', '.join(missing_audio)}")
+        if missing_subtitles:
+            print(f"Warning: Subtitle tracks unavailable: {', '.join(missing_subtitles)}")
 
         output_dir = sanitize_filename(info.episode_metadata.series_title)
         os.makedirs(output_dir, exist_ok=True)
@@ -667,7 +694,16 @@ def download_episode(
                 )
 
         if sub_tracks:
-            print("Downloaded subtitles!")
+            print(
+                "Downloaded subtitles: "
+                + ", ".join(
+                    f"{track_title(track.locale)}"
+                    + (" (default)" if track.is_default else "")
+                    for track in sub_tracks
+                )
+            )
+        elif subs_langs:
+            print("Downloaded subtitles: none")
 
         video_file: Optional[str] = None
         audio_tracks: List[MediaTrack] = []
@@ -739,6 +775,10 @@ def download_episode(
                     is_default=len(audio_tracks) == 0,
                 )
             )
+            print(
+                f"Downloaded audio: {track_title(version.audio_locale)}"
+                + (" (default)" if audio_tracks[-1].is_default else "")
+            )
 
             if i == 0:
                 print("Downloading video...")
@@ -809,7 +849,12 @@ def download_episode(
             pass
 
         atomic_finalize(temp_output_filename, output_filename)
-        print(f"\nDownload finished! Output file: {output_filename}\n")
+        print(
+            "\nTracks in output: "
+            f"audio=[{', '.join(track_title(track.locale) + (' (default)' if track.is_default else '') for track in audio_tracks)}], "
+            f"subtitles=[{', '.join(track_title(track.locale) + (' (default)' if track.is_default else '') for track in sub_tracks) or 'none'}]"
+        )
+        print(f"Download finished! Output file: {output_filename}\n")
         return output_filename
 
     finally:

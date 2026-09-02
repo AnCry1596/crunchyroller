@@ -6,6 +6,8 @@ from .session_pool import SessionPool, ConcurrencyConfig
 
 
 class CrunchyrollHttpClient:
+    DEFAULT_REQUEST_TIMEOUT = 20
+
     def __init__(
         self,
         etp_rt: Optional[str] = None,
@@ -49,6 +51,7 @@ class CrunchyrollHttpClient:
 
     def do_request(self, method: str, url: str, **kwargs) -> requests.Response:
         headers = kwargs.pop("headers", {})
+        kwargs.setdefault("timeout", self.DEFAULT_REQUEST_TIMEOUT)
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         if "User-Agent" not in headers:
