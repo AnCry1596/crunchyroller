@@ -1,6 +1,274 @@
 // crunchyroller - web dashboard logic
 
 let pollTimer = null;
+let ddVideo = null;
+let ddAudioQual = null;
+let ddAudio = null;
+let ddSubs = null;
+
+const VIDEO_OPTIONS = [
+  { val: '1080p', label: '1080p' },
+  { val: '720p', label: '720p' },
+  { val: '480p', label: '480p' },
+  { val: '360p', label: '360p' },
+  { val: '240p', label: '240p' }
+];
+
+const AUDIO_QUAL_OPTIONS = [
+  { val: '192k', label: '192k' },
+  { val: '96k', label: '96k' }
+];
+
+const AUDIO_OPTIONS = [
+  { val: 'all', label: 'All available' },
+  { val: 'ja-JP', label: 'Japanese' },
+  { val: 'en-US', label: 'English' },
+  { val: 'de-DE', label: 'German' },
+  { val: 'fr-FR', label: 'French' },
+  { val: 'es-419', label: 'Spanish (Latin America)' },
+  { val: 'es-ES', label: 'Spanish (Spain)' },
+  { val: 'pt-BR', label: 'Portuguese (Brazil)' },
+  { val: 'pt-PT', label: 'Portuguese (Portugal)' },
+  { val: 'it-IT', label: 'Italian' },
+  { val: 'ru-RU', label: 'Russian' },
+  { val: 'ar-SA', label: 'Arabic' },
+  { val: 'hi-IN', label: 'Hindi' },
+  { val: 'ko-KR', label: 'Korean' },
+  { val: 'zh-CN', label: 'Chinese' },
+  { val: 'id-ID', label: 'Indonesian' }
+];
+
+const SUBS_OPTIONS = [
+  { val: 'all', label: 'All available' },
+  { val: 'en-US', label: 'English' },
+  { val: 'es-419', label: 'Spanish (Latin America)' },
+  { val: 'es-ES', label: 'Spanish (Spain)' },
+  { val: 'pt-BR', label: 'Portuguese (Brazil)' },
+  { val: 'pt-PT', label: 'Portuguese (Portugal)' },
+  { val: 'fr-FR', label: 'French' },
+  { val: 'de-DE', label: 'German' },
+  { val: 'it-IT', label: 'Italian' },
+  { val: 'ru-RU', label: 'Russian' },
+  { val: 'ar-SA', label: 'Arabic' },
+  { val: 'hi-IN', label: 'Hindi' },
+  { val: 'id-ID', label: 'Indonesian' },
+  { val: 'vi-VN', label: 'Vietnamese' },
+  { val: 'th-TH', label: 'Thai' },
+  { val: 'tr-TR', label: 'Turkish' },
+  { val: 'pl-PL', label: 'Polish' }
+];
+
+class CheckboxDropdown {
+  constructor(containerId, hiddenInputId, options, defaultVal, onChange, multi = true) {
+    this.container = document.getElementById(containerId);
+    this.hiddenInput = document.getElementById(hiddenInputId);
+    this.options = options;
+    this.onChange = onChange;
+    this.multi = multi;
+    this.value = defaultVal || (multi ? 'all' : (options[0] ? options[0].val : ''));
+    this.init();
+  }
+
+  init() {
+    if (!this.container) return;
+    this.container.innerHTML = `
+      <div class="select-btn" tabindex="0" role="button" aria-haspopup="listbox">
+        <span class="select-btn-text"></span>
+        <svg class="select-arrow" width="10" height="6" viewBox="0 0 10 6" fill="none">
+          <path d="M1 1L5 5L9 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div class="select-menu" role="listbox"></div>
+    `;
+
+    this.btn = this.container.querySelector('.select-btn');
+    this.btnText = this.container.querySelector('.select-btn-text');
+    this.menu = this.container.querySelector('.select-menu');
+
+    this.btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggle();
+    });
+
+    this.btn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        this.toggle();
+      }
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!this.container.contains(e.target)) {
+        this.close();
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.container.classList.contains('open')) {
+        this.close();
+      }
+    });
+
+    this.render();
+  }
+
+  toggle() {
+    const wasOpen = this.container.classList.contains('open');
+    document.querySelectorAll('.select-dropdown.open').forEach(el => el.classList.remove('open'));
+    if (!wasOpen) {
+      this.container.classList.add('open');
+    }
+  }
+
+  close() {
+    this.container.classList.remove('open');
+  }
+
+  getSelectedList() {
+    if (!this.multi) return [this.value];
+    if (!this.value || !this.value.trim()) return ['all'];
+    if (this.value.trim().toLowerCase() === 'all') return ['all'];
+    return this.value.split(',').map(s => s.trim()).filter(Boolean);
+  }
+
+  setValue(val, triggerChange = true) {
+    if (!this.multi) {
+      this.value = val || (this.options[0] ? this.options[0].val : '');
+    } else {
+      this.value = val || 'all';
+    }
+    if (this.hiddenInput) this.hiddenInput.value = this.value;
+    this.render();
+    if (triggerChange && this.onChange) {
+      this.onChange(this.value);
+    }
+  }
+
+  selectSingle(val) {
+    this.setValue(val);
+    this.close();
+  }
+
+  toggleItem(val) {
+    if (!this.multi) {
+      this.selectSingle(val);
+      return;
+    }
+
+    if (val === 'all') {
+      this.setValue('all');
+      return;
+    }
+
+    let list = this.getSelectedList();
+    const allSpecific = this.options.filter(o => o.val !== 'all').map(o => o.val.toLowerCase());
+
+    if (list.includes('all')) {
+      list = [val];
+    } else {
+      const idx = list.findIndex(c => c.toLowerCase() === val.toLowerCase());
+      if (idx !== -1) {
+        list.splice(idx, 1);
+      } else {
+        list.push(val);
+      }
+    }
+
+    if (list.length === 0) {
+      this.setValue('all');
+      return;
+    }
+
+    if (list.length >= allSpecific.length && allSpecific.every(code => list.some(c => c.toLowerCase() === code))) {
+      this.setValue('all');
+      return;
+    }
+
+    this.setValue(list.join(','));
+  }
+
+  render() {
+    if (!this.multi) {
+      const found = this.options.find(o => o.val.toLowerCase() === (this.value || '').toLowerCase());
+      this.btnText.textContent = found ? found.label : (this.value || 'Select');
+
+      this.menu.innerHTML = '';
+      this.options.forEach(opt => {
+        const isChecked = opt.val.toLowerCase() === (this.value || '').toLowerCase();
+        const row = document.createElement('div');
+        row.className = 'select-opt' + (isChecked ? ' selected' : '');
+        row.setAttribute('role', 'option');
+        row.setAttribute('aria-selected', isChecked ? 'true' : 'false');
+
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'cb-custom';
+        cb.checked = isChecked;
+        cb.tabIndex = -1;
+
+        const label = document.createElement('span');
+        label.className = 'select-opt-text';
+        label.textContent = opt.label;
+
+        row.append(cb, label);
+        row.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.selectSingle(opt.val);
+        });
+
+        this.menu.appendChild(row);
+      });
+      return;
+    }
+
+    const selected = this.getSelectedList();
+    const isAll = selected.includes('all');
+
+    if (isAll) {
+      this.btnText.textContent = 'All available';
+    } else {
+      const labels = selected.map(code => {
+        const found = this.options.find(o => o.val.toLowerCase() === code.toLowerCase());
+        return found ? found.label : code;
+      });
+      if (labels.length === 1) {
+        this.btnText.textContent = labels[0];
+      } else if (labels.length === 2) {
+        this.btnText.textContent = `${labels[0]}, ${labels[1]}`;
+      } else {
+        this.btnText.textContent = `${labels[0]}, ${labels[1]} +${labels.length - 2}`;
+      }
+    }
+
+    this.menu.innerHTML = '';
+    this.options.forEach(opt => {
+      const isChecked = isAll ? (opt.val === 'all') : selected.some(c => c.toLowerCase() === opt.val.toLowerCase());
+      const row = document.createElement('div');
+      row.className = 'select-opt' + (isChecked ? ' selected' : '') + (opt.val === 'all' ? ' opt-all' : '');
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', isChecked ? 'true' : 'false');
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'cb-custom';
+      cb.checked = isChecked;
+      cb.tabIndex = -1;
+
+      const label = document.createElement('span');
+      label.className = 'select-opt-text';
+      label.textContent = opt.label;
+
+      row.append(cb, label);
+
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleItem(opt.val);
+      });
+
+      this.menu.appendChild(row);
+    });
+  }
+}
 
 // quick toast popup
 function toast(msg, type = 'ok') {
@@ -22,6 +290,11 @@ async function api(endpoint, payload = null) {
 
 // init app state on page load
 window.addEventListener('DOMContentLoaded', async () => {
+  ddVideo = new CheckboxDropdown('dd-video', 'vq', VIDEO_OPTIONS, '1080p', () => saveCfg(), false);
+  ddAudioQual = new CheckboxDropdown('dd-audio-qual', 'aq', AUDIO_QUAL_OPTIONS, '192k', () => saveCfg(), false);
+  ddAudio = new CheckboxDropdown('dd-audio', 'al', AUDIO_OPTIONS, 'ja-JP', () => saveCfg(), true);
+  ddSubs = new CheckboxDropdown('dd-subs', 'sl', SUBS_OPTIONS, 'en-US', () => saveCfg(), true);
+
   const state = await api('/api/state');
   applyState(state);
 });
@@ -39,15 +312,35 @@ function applyState(state) {
     badgeTxt.textContent = 'offline';
   }
 
-  // update settings selects
-  const fieldMap = { vq: 'video_quality', aq: 'audio_quality', al: 'audio_lang', sl: 'subs_lang' };
-  Object.entries(fieldMap).forEach(([id, key]) => {
-    const el = document.getElementById(id);
-    if (el && state.config[key]) el.value = state.config[key];
-  });
+  // update settings
+  if (state.config) {
+    if (ddVideo && state.config.video_quality) {
+      ddVideo.setValue(state.config.video_quality, false);
+    } else if (state.config.video_quality) {
+      document.getElementById('vq').value = state.config.video_quality;
+    }
+
+    if (ddAudioQual && state.config.audio_quality) {
+      ddAudioQual.setValue(state.config.audio_quality, false);
+    } else if (state.config.audio_quality) {
+      document.getElementById('aq').value = state.config.audio_quality;
+    }
+
+    if (ddAudio && state.config.audio_lang) {
+      ddAudio.setValue(state.config.audio_lang, false);
+    } else if (state.config.audio_lang) {
+      document.getElementById('al').value = state.config.audio_lang;
+    }
+
+    if (ddSubs && state.config.subs_lang) {
+      ddSubs.setValue(state.config.subs_lang, false);
+    } else if (state.config.subs_lang) {
+      document.getElementById('sl').value = state.config.subs_lang;
+    }
+  }
 
   // if a download is running, start polling progress
-  if (state.download.status === 'running') startPolling();
+  if (state.download && state.download.status === 'running') startPolling();
   updateProgressPanel(state.download);
 }
 
@@ -97,11 +390,16 @@ async function saveToken() {
 
 // save quality / language dropdowns
 async function saveCfg() {
+  const vqVal = ddVideo ? ddVideo.value : (document.getElementById('vq').value || '1080p');
+  const aqVal = ddAudioQual ? ddAudioQual.value : (document.getElementById('aq').value || '192k');
+  const audioVal = ddAudio ? ddAudio.value : (document.getElementById('al').value || 'ja-JP');
+  const subsVal = ddSubs ? ddSubs.value : (document.getElementById('sl').value || 'en-US');
+
   await api('/api/config', {
-    video_quality: document.getElementById('vq').value,
-    audio_quality: document.getElementById('aq').value,
-    audio_lang: document.getElementById('al').value,
-    subs_lang: document.getElementById('sl').value,
+    video_quality: vqVal,
+    audio_quality: aqVal,
+    audio_lang: audioVal,
+    subs_lang: subsVal,
   });
 }
 
@@ -146,16 +444,13 @@ function renderEpisodeTree(data) {
 
     const seasonCb = document.createElement('input');
     seasonCb.type = 'checkbox';
+    seasonCb.className = 'cb-custom sn-cb';
     seasonCb.checked = true;
     seasonCb.id = 's' + sIdx;
-    seasonCb.addEventListener('change', e => {
-      block.querySelectorAll('.epc').forEach(cb => cb.checked = e.target.checked);
-    });
 
-    const label = document.createElement('label');
-    label.htmlFor = 's' + sIdx;
+    const label = document.createElement('span');
+    label.className = 'sn-title';
     label.textContent = 'season ' + season.season_number;
-    label.style.cssText = 'cursor:pointer;color:var(--white);font-weight:600;margin:0';
 
     const count = document.createElement('span');
     count.className = 'sn-count';
@@ -167,14 +462,27 @@ function renderEpisodeTree(data) {
     const epList = document.createElement('div');
     epList.className = 'ep-list';
 
+    head.addEventListener('click', () => {
+      seasonCb.checked = !seasonCb.checked;
+      seasonCb.indeterminate = false;
+      const isChecked = seasonCb.checked;
+      epList.querySelectorAll('.epc').forEach(cb => {
+        cb.checked = isChecked;
+        const row = cb.closest('.ep-row');
+        if (row) row.classList.toggle('selected', isChecked);
+      });
+      updateSeasonState(block);
+      updateTotalCount();
+    });
+
     season.episodes.forEach(ep => {
       const row = document.createElement('div');
-      row.className = 'ep-row';
+      row.className = 'ep-row selected';
 
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = true;
-      cb.className = 'epc';
+      cb.className = 'cb-custom epc';
       cb.dataset.id = ep.id;
 
       const num = document.createElement('span');
@@ -185,8 +493,11 @@ function renderEpisodeTree(data) {
       name.className = 'ep-name';
       name.textContent = ep.title;
 
-      row.addEventListener('click', e => {
-        if (e.target !== cb) cb.checked = !cb.checked;
+      row.addEventListener('click', () => {
+        cb.checked = !cb.checked;
+        row.classList.toggle('selected', cb.checked);
+        updateSeasonState(block);
+        updateTotalCount();
       });
 
       row.append(cb, num, name);
@@ -195,14 +506,56 @@ function renderEpisodeTree(data) {
 
     block.append(head, epList);
     list.appendChild(block);
+    updateSeasonState(block);
   });
 
+  updateTotalCount();
   document.getElementById('tree').style.display = 'block';
+}
+
+function updateSeasonState(block) {
+  const seasonCb = block.querySelector('.sn-cb');
+  const epCbs = [...block.querySelectorAll('.epc')];
+  const countEl = block.querySelector('.sn-count');
+
+  const total = epCbs.length;
+  const checked = epCbs.filter(c => c.checked).length;
+
+  if (checked === 0) {
+    seasonCb.checked = false;
+    seasonCb.indeterminate = false;
+  } else if (checked === total) {
+    seasonCb.checked = true;
+    seasonCb.indeterminate = false;
+  } else {
+    seasonCb.checked = false;
+    seasonCb.indeterminate = true;
+  }
+
+  if (countEl) {
+    countEl.textContent = checked === total ? `${total} ep` : `${checked}/${total} ep`;
+  }
+}
+
+function updateTotalCount() {
+  const allEps = document.querySelectorAll('.epc');
+  const checkedEps = document.querySelectorAll('.epc:checked');
+  const count = checkedEps.length;
+  const total = allEps.length;
+
+  const badge = document.getElementById('tree-selected-count');
+  if (badge) badge.textContent = `${count} / ${total} selected`;
 }
 
 // select / deselect all episodes
 function pickAll(val) {
-  document.querySelectorAll('.epc, [id^="s"]').forEach(cb => cb.checked = val);
+  document.querySelectorAll('.epc').forEach(cb => {
+    cb.checked = val;
+    const row = cb.closest('.ep-row');
+    if (row) row.classList.toggle('selected', val);
+  });
+  document.querySelectorAll('.sn-block').forEach(block => updateSeasonState(block));
+  updateTotalCount();
 }
 
 // start batch download task
@@ -213,12 +566,17 @@ async function startDl() {
     return;
   }
 
+  const vqVal = ddVideo ? ddVideo.value : (document.getElementById('vq').value || '1080p');
+  const aqVal = ddAudioQual ? ddAudioQual.value : (document.getElementById('aq').value || '192k');
+  const audioVal = ddAudio ? ddAudio.value : (document.getElementById('al').value || 'ja-JP');
+  const subsVal = ddSubs ? ddSubs.value : (document.getElementById('sl').value || 'en-US');
+
   const res = await api('/api/download', {
     items: selected,
-    video_quality: document.getElementById('vq').value,
-    audio_quality: document.getElementById('aq').value,
-    audio_lang: document.getElementById('al').value,
-    subs_lang: document.getElementById('sl').value,
+    video_quality: vqVal,
+    audio_quality: aqVal,
+    audio_lang: audioVal,
+    subs_lang: subsVal,
   });
 
   if (!res.success) {
