@@ -13,7 +13,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import requests
 
-from .api import delete_stream, get_episode, get_season_episodes, get_series
+from .api import delete_stream, get_episode, get_episode_info, get_season_episodes, get_series
 from .decryptor import decrypt_mp4, decrypt_stream
 from .drm import get_license
 from .http_client import CrunchyrollHttpClient
@@ -559,6 +559,7 @@ def download_episode(
         )
         if not audio_langs:
             audio_langs = [info.episode_metadata.audio_locale or "ja-JP"]
+        print(f"Available audio tracks: {', '.join(audio_langs)}")
     else:
         audio_langs = _unique_locales(audio_langs)
 
@@ -826,13 +827,22 @@ def download_season(
     print(f"Found {len(episodes)} episodes in this season!\n")
     for i, ep in enumerate(episodes):
         print(f"=== [{i+1}/{len(episodes)}] {ep.title} ===")
+        episode_versions = ep.versions
+        if _is_all_tracks(audio_langs) and ep.id:
+            try:
+                episode_info = get_episode_info(client, ep.id)
+                if episode_info.episode_metadata.versions:
+                    episode_versions = episode_info.episode_metadata.versions
+            except Exception as exc:
+                print(f"Warning: Failed to discover all audio versions: {exc}")
+
         info = EpisodeInfo(
             episode_metadata=EpisodeMetadata(
                 series_title=ep.series_title,
                 season_number=ep.season_number,
                 episode_number=ep.episode_number,
                 audio_locale=ep.audio_locale,
-                versions=ep.versions,
+                versions=episode_versions,
                 availability_starts=ep.availability_starts,
             ),
             title=ep.title,
@@ -895,13 +905,24 @@ def download_series(
 
     for i, ep in enumerate(episodes):
         print(f"=== [{i+1}/{len(episodes)}] {ep.series_title} S{ep.season_number:02d}E{ep.episode_number:02d} - {ep.title} ===")
+        episode_versions = ep.versions
+        if _is_all_tracks(audio_langs) and ep.id:
+            # The season endpoint may expose only the preferred audio version.
+            # The episode object contains the complete dub-version list.
+            try:
+                episode_info = get_episode_info(client, ep.id)
+                if episode_info.episode_metadata.versions:
+                    episode_versions = episode_info.episode_metadata.versions
+            except Exception as exc:
+                print(f"Warning: Failed to discover all audio versions: {exc}")
+
         info = EpisodeInfo(
             episode_metadata=EpisodeMetadata(
                 series_title=ep.series_title,
                 season_number=ep.season_number,
                 episode_number=ep.episode_number,
                 audio_locale=ep.audio_locale,
-                versions=ep.versions,
+                versions=episode_versions,
                 availability_starts=ep.availability_starts,
             ),
             title=ep.title,
