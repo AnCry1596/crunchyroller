@@ -241,6 +241,7 @@ def download_parts(
                 timeout=30,
                 chunk_size=chunk_size,
                 progress_callback=_file_progress,
+                parallel_ranges=8,
             )
             elapsed = time.time() - start_time
             speed_mb = total_bytes / max(elapsed, 0.001) / (1024 * 1024)
