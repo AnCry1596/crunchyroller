@@ -8,6 +8,15 @@ from pywidevine.pssh import PSSH
 from .http_client import CrunchyrollHttpClient
 
 
+def _key_bytes(value) -> bytes:
+    """Convert pywidevine key/KID values to raw bytes consistently."""
+    if isinstance(value, bytes):
+        return value
+    if hasattr(value, "bytes"):
+        return value.bytes
+    return bytes.fromhex(str(value).replace("-", "").replace(" ", ""))
+
+
 def get_widevine_device() -> Optional[Device]:
     """hunt for a widevine device (.wvd or bin+pem)"""
     wvd_files = glob.glob("*.wvd")
@@ -86,15 +95,15 @@ def get_license(
         keys: Dict[bytes, bytes] = {}
         for k in cdm.get_keys(session_id):
             if str(k.type).upper() in ("CONTENT", "STREAMING", "1", "KEYTYPE.CONTENT", "KEYTYPE.STREAMING"):
-                kid_bytes = k.kid.bytes if hasattr(k.kid, "bytes") else (k.kid if isinstance(k.kid, bytes) else bytes.fromhex(str(k.kid).replace("-", "")))
-                key_bytes = k.key if isinstance(k.key, bytes) else bytes.fromhex(str(k.key))
+                kid_bytes = _key_bytes(k.kid)
+                key_bytes = _key_bytes(k.key)
                 keys[kid_bytes] = key_bytes
 
         if not keys:
             # whatever, just grab all the keys
             for k in cdm.get_keys(session_id):
-                kid_bytes = k.kid.bytes if hasattr(k.kid, "bytes") else (k.kid if isinstance(k.kid, bytes) else bytes.fromhex(str(k.kid).replace("-", "")))
-                key_bytes = k.key if isinstance(k.key, bytes) else bytes.fromhex(str(k.key))
+                kid_bytes = _key_bytes(k.kid)
+                key_bytes = _key_bytes(k.key)
                 keys[kid_bytes] = key_bytes
 
         return keys

@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -19,7 +20,7 @@ from .drm import get_license
 from .http_client import CrunchyrollHttpClient
 from .integrity import StreamValidator, atomic_finalize
 from .merger import find_ffmpeg, merge_everything
-from .mpd import expand_timeline, get_base_url, get_pssh, get_default_kid, parse_manifest
+from .mpd import expand_timeline, get_base_url, get_kids, get_pssh, parse_manifest
 from .session_pool import ConcurrencyConfig, SessionPool
 from .stream_assembler import StreamAssembler
 from .types import (
@@ -523,18 +524,38 @@ def _locale_map(values: Dict[str, object]) -> Dict[str, object]:
 def _keys_for_adaptation_set(
     keys: Dict[bytes, bytes], adaptation_set: Optional[ET.Element]
 ) -> Dict[bytes, bytes]:
-    """Return the license key matching an adaptation set's CENC default_KID."""
+    """Return license keys matching all CENC KIDs in an adaptation set."""
     if not keys or adaptation_set is None:
         return keys
-    kid = get_default_kid(adaptation_set)
-    if kid is None:
+    kids = get_kids(adaptation_set)
+    if not kids:
         return keys
+    normalized_keys = {}
     for candidate, value in keys.items():
-        if candidate.replace(b"-", b"").lower() == kid.lower():
-            return {candidate: value}
-    raise RuntimeError(
-        f"No decryption key was returned for adaptation-set KID {kid.hex()}"
-    )
+        candidate_bytes = bytes(candidate).lower()
+        normalized_keys[candidate_bytes] = (candidate, value)
+        if len(candidate_bytes) == 16:
+            normalized_keys.setdefault(
+                uuid.UUID(bytes=candidate_bytes).bytes_le,
+                (candidate, value),
+            )
+    selected = {}
+    missing = []
+    for kid in kids:
+        kid_bytes = bytes(kid).lower()
+        match = normalized_keys.get(kid_bytes)
+        if match is None and len(kid_bytes) == 16:
+            match = normalized_keys.get(uuid.UUID(bytes=kid_bytes).bytes_le)
+        if match is None:
+            missing.append(kid.hex())
+        else:
+            selected[match[0]] = match[1]
+    if missing:
+        raise RuntimeError(
+            "No decryption key was returned for adaptation-set KID(s): "
+            + ", ".join(missing)
+        )
+    return selected
 
 
 def download_episode(

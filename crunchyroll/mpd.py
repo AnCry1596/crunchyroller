@@ -38,6 +38,24 @@ def get_default_kid(element: ET.Element) -> Optional[bytes]:
     return None
 
 
+def get_kids(element: ET.Element) -> List[bytes]:
+    """Extract every CENC default_KID declared by an MPD element tree."""
+    result: List[bytes] = []
+    seen = set()
+    for elem in element.iter():
+        for name, value in elem.attrib.items():
+            if name.rsplit("}", 1)[-1].lower() != "default_kid":
+                continue
+            try:
+                kid = bytes.fromhex(value.replace("-", "").strip())
+            except ValueError:
+                continue
+            if kid not in seen:
+                result.append(kid)
+                seen.add(kid)
+    return result
+
+
 def get_pssh(manifest: ET.Element) -> Optional[str]:
     """dig out the cenc pssh string from the manifest.
     handles all CR MPD variants - some shows put ContentProtection under
