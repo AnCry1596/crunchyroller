@@ -229,7 +229,7 @@ def download_parts(
                         callback_total,
                         f"{speed_mb_s:.2f} MB/s",
                         speed_mb_s,
-                        track_type,
+                        f"{track_type}-file",
                     )
 
             total_bytes = 0

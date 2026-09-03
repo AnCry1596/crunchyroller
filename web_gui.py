@@ -73,6 +73,7 @@ STATE = {
         "segs_done":   0,
         "segs_total":  0,
         "speed":       "",
+        "complete_file": False,
         "overall_pct": 0.0,
         "track_pct":   0.0,
         "log":         [],
@@ -94,7 +95,7 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
         STATE["download"].update(
             status="running", episode="", speed="", track="",
             segs_done=0, segs_total=0, ep_idx=0, ep_total=ep_total,
-            overall_pct=0.0, track_pct=0.0, log=[],
+            overall_pct=0.0, track_pct=0.0, complete_file=False, log=[],
         )
 
     client = CrunchyrollHttpClient(STATE["etp_rt"])
@@ -124,6 +125,9 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
 
                 track_type = str(status).lower() if status else "video"
                 frac = (cur / tot) if tot > 0 else 0.0
+                complete_file = track_type.endswith("-file")
+                if complete_file:
+                    track_type = track_type[:-5]
 
                 if "audio" in track_type:
                     # Audio represents the first 15% of the episode
@@ -150,6 +154,7 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
                     STATE["download"]["track"]        = display_track
                     STATE["download"]["track_pct"]   = round(frac * 100, 1) if "mux" not in track_type else 100.0
                     STATE["download"]["overall_pct"] = min(overall, cap)
+                    STATE["download"]["complete_file"] = complete_file
 
             download_episode(
                 client=client, base_content_id=ep_id, info=info,

@@ -644,7 +644,13 @@ function updateProgressPanel(dl) {
   const segsEl = document.getElementById('dl-segs');
   if (dl.segs_total > 0) {
     const trackSuffix = dl.track ? ` [${dl.track}]` : '';
-    segsEl.textContent = `${dl.segs_done} / ${dl.segs_total} parts${trackSuffix}`;
+    if (dl.complete_file) {
+      const doneMb = (dl.segs_done / (1024 * 1024)).toFixed(1);
+      const totalMb = (dl.segs_total / (1024 * 1024)).toFixed(1);
+      segsEl.textContent = `${doneMb} / ${totalMb} MB${trackSuffix}`;
+    } else {
+      segsEl.textContent = `${dl.segs_done} / ${dl.segs_total} parts${trackSuffix}`;
+    }
   } else if (dl.track) {
     segsEl.textContent = dl.track;
   } else {
