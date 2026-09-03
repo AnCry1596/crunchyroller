@@ -10,7 +10,8 @@ from .session_pool import SessionPool, ConcurrencyConfig
 class CrunchyrollHttpClient:
     DEFAULT_REQUEST_TIMEOUT = 20
     MAX_RATE_LIMIT_RETRIES = 10
-    MAX_RATE_LIMIT_WAIT = 60
+    RATE_LIMIT_INITIAL_WAIT = 30
+    MAX_RATE_LIMIT_WAIT = 300
 
     def __init__(
         self,
@@ -54,19 +55,19 @@ class CrunchyrollHttpClient:
         self.token = get_access_token(self.etp_rt)
 
     def _rate_limit_wait(self, response: requests.Response, retry_number: int) -> int:
-        """Return a bounded delay for a 420/429 response."""
+        """Return a flood-wait-aware delay for a 420/429 response."""
         retry_after = response.headers.get("Retry-After", "")
         try:
             requested_wait = int(retry_after)
         except (TypeError, ValueError):
             requested_wait = 0
 
+        scheduled_wait = self.RATE_LIMIT_INITIAL_WAIT * (2 ** max(retry_number - 1, 0))
         if requested_wait > 0:
-            return min(requested_wait, self.MAX_RATE_LIMIT_WAIT)
+            scheduled_wait = max(scheduled_wait, requested_wait)
 
-        # Start conservatively and cap the delay so a bad/missing header does
-        # not cause a tight retry loop or an indefinitely long single wait.
-        return min(5 * (2 ** (retry_number - 1)), self.MAX_RATE_LIMIT_WAIT)
+        # Cap each sleep while retaining the increasing flood-wait signal.
+        return min(scheduled_wait, self.MAX_RATE_LIMIT_WAIT)
 
     def do_request(self, method: str, url: str, **kwargs) -> requests.Response:
         headers = kwargs.pop("headers", {})
@@ -142,7 +143,7 @@ class CrunchyrollHttpClient:
         while response.status_code in {420, 429} and retries < self.MAX_RATE_LIMIT_RETRIES:
             retries += 1
             status_code = response.status_code
-            wait_time = 30 if status_code == 420 else self._rate_limit_wait(response, retries)
+            wait_time = self._rate_limit_wait(response, retries)
             retry_after = response.headers.get("Retry-After", "")
             header_note = f" Retry-After={retry_after}s." if retry_after else ""
             print(

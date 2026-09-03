@@ -160,6 +160,18 @@ class SessionPool:
         "Referer": "https://static.crunchyroll.com/",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
     }
+    RATE_LIMIT_INITIAL_WAIT = 30.0
+    MAX_RATE_LIMIT_WAIT = 300.0
+
+    def _rate_limit_wait(self, response: requests.Response, retry_number: int) -> float:
+        """Return a 30s, 60s, 120s... flood-wait delay for 420/429."""
+        retry_after = response.headers.get("Retry-After", "")
+        try:
+            server_wait = float(retry_after)
+        except (TypeError, ValueError):
+            server_wait = 0.0
+        scheduled_wait = self.RATE_LIMIT_INITIAL_WAIT * (2 ** max(retry_number - 1, 0))
+        return min(max(scheduled_wait, server_wait), self.MAX_RATE_LIMIT_WAIT)
 
     def __init__(
         self,
@@ -255,11 +267,7 @@ class SessionPool:
                             f"HTTP {resp.status_code} rate limit for {self._safe_url(url)}"
                         )
                         retry_after = resp.headers.get("Retry-After", "")
-                        try:
-                            wait_time = float(retry_after)
-                        except (TypeError, ValueError):
-                            wait_time = self.backoff_factor ** attempt * 2.0
-                        wait_time = max(0.5, min(wait_time, 60.0))
+                        wait_time = self._rate_limit_wait(resp, attempt_number)
                         logger.warning(
                             "Rate limited downloading %s (HTTP %s, attempt %s/%s); "
                             "waiting %.1fs",
@@ -399,11 +407,7 @@ class SessionPool:
                     if resp.status_code in (420, 429):
                         self.scaler.record_failure(resp.status_code)
                         retry_after = resp.headers.get("Retry-After", "")
-                        try:
-                            wait_time = float(retry_after)
-                        except (TypeError, ValueError):
-                            wait_time = self.backoff_factor ** attempt * 2.0
-                        wait_time = max(0.5, min(wait_time, 60.0))
+                        wait_time = self._rate_limit_wait(resp, attempt + 1)
                         if attempt < self.max_retries - 1:
                             time.sleep(wait_time)
                             continue
@@ -531,12 +535,9 @@ class SessionPool:
                     ) as response:
                         if response.status_code in (420, 429):
                             retry_after = response.headers.get("Retry-After", "")
-                            try:
-                                wait_time = float(retry_after)
-                            except (TypeError, ValueError):
-                                wait_time = self.backoff_factor ** attempt * 2.0
+                            wait_time = self._rate_limit_wait(response, attempt + 1)
                             if attempt < range_retries - 1:
-                                time.sleep(max(0.5, min(wait_time, 10.0)))
+                                time.sleep(wait_time)
                             continue
                         if response.status_code != 206:
                             raise RuntimeError(

@@ -610,6 +610,81 @@ def _keys_for_adaptation_set(
     return selected
 
 
+def _stream_expired_error(error: Exception) -> bool:
+    """Return whether a media failure likely means signed playback URLs expired."""
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in ("http 401", "http 403", "http 410", "unauthorized", "forbidden")
+    )
+
+
+def _prepare_media_track(
+    client: CrunchyrollHttpClient,
+    ep: PlaybackStream,
+    content_id: str,
+    audio_quality: str,
+    video_quality: str,
+    debug: bool,
+) -> Dict[str, object]:
+    """Fetch a current MPD and license keys and resolve its media sets."""
+    manifest = parse_manifest(client, ep.manifest_url, debug=debug)
+    pssh = get_pssh(manifest)
+    if not pssh:
+        raise RuntimeError("PSSH not found in MPD manifest")
+
+    keys = get_license(client, pssh, content_id, ep.token)
+    periods = [e for e in manifest if _clean_tag(e.tag) == "Period"]
+    period = periods[0] if periods else manifest
+    period_duration_seconds = parse_dash_duration(period.attrib.get("duration"))
+    if period_duration_seconds is None:
+        period_duration_seconds = parse_dash_duration(
+            manifest.attrib.get("mediaPresentationDuration")
+        )
+    adaptation_sets = [e for e in period if _clean_tag(e.tag) == "AdaptationSet"]
+
+    video_set = None
+    audio_set = None
+    for aset in adaptation_sets:
+        mime = aset.attrib.get("mimeType", "")
+        ctype = aset.attrib.get("contentType", "")
+        reps = [r for r in aset if _clean_tag(r.tag) == "Representation"]
+        is_video = "video" in mime or "video" in ctype or any(
+            "height" in r.attrib for r in reps
+        )
+        is_audio = "audio" in mime or "audio" in ctype or any(
+            "audio" in r.attrib.get("id", "") for r in reps
+        )
+        if is_video and video_set is None:
+            video_set = aset
+        elif is_audio and audio_set is None:
+            audio_set = aset
+
+    if audio_set is None and len(adaptation_sets) > 1:
+        audio_set = adaptation_sets[1]
+    if video_set is None and adaptation_sets:
+        video_set = adaptation_sets[0]
+
+    audio_base_url, audio_rep_id = get_base_url(audio_set, False, audio_quality)
+    if not audio_base_url or not audio_rep_id:
+        raise RuntimeError("failed to get the audio base URL")
+    video_base_url, video_rep_id = get_base_url(video_set, True, video_quality)
+    if not video_base_url or not video_rep_id:
+        raise RuntimeError("failed to get the video base URL")
+
+    return {
+        "audio_set": audio_set,
+        "audio_keys": _keys_for_adaptation_set(keys, audio_set),
+        "audio_base_url": audio_base_url,
+        "audio_rep_id": audio_rep_id,
+        "video_set": video_set,
+        "video_keys": _keys_for_adaptation_set(keys, video_set),
+        "video_base_url": video_base_url,
+        "video_rep_id": video_rep_id,
+        "period_duration_seconds": period_duration_seconds,
+    }
+
+
 def download_episode(
     client: CrunchyrollHttpClient,
     base_content_id: str,
@@ -817,74 +892,83 @@ def download_episode(
                     playback_cache[content_id] = ep
                     active_streams[content_id] = ep.token
 
-            manifest = parse_manifest(client, ep.manifest_url, debug=debug)
-            pssh = get_pssh(manifest)
-            if not pssh:
-                raise RuntimeError("PSSH not found in MPD manifest")
+            # Subtitle discovery can happen well before media download. Get
+            # a fresh playback session immediately before using its manifest,
+            # license, and signed media URLs so an aged stream token does not
+            # expire halfway through a long multi-track episode.
+            refreshed_ep = get_episode(
+                client,
+                content_id,
+                debug=debug,
+                playback_id=version.guid or content_id,
+            )
+            previous_token = active_streams.get(content_id)
+            if previous_token and previous_token != refreshed_ep.token:
+                delete_stream(client, content_id, previous_token)
+            ep = refreshed_ep
+            playback_cache[content_id] = ep
+            active_streams[content_id] = ep.token
 
-            keys = get_license(client, pssh, content_id, ep.token)
-
-            periods = [e for e in manifest if _clean_tag(e.tag) == "Period"]
-            period = periods[0] if periods else manifest
-            period_duration_seconds = parse_dash_duration(period.attrib.get("duration"))
-            if period_duration_seconds is None:
-                period_duration_seconds = parse_dash_duration(
-                    manifest.attrib.get("mediaPresentationDuration")
-                )
-            adaptation_sets = [e for e in period if _clean_tag(e.tag) == "AdaptationSet"]
-
-            video_set = None
-            audio_set = None
-            for aset in adaptation_sets:
-                mime = aset.attrib.get("mimeType", "")
-                ctype = aset.attrib.get("contentType", "")
-                reps = [r for r in aset if _clean_tag(r.tag) == "Representation"]
-                is_video = "video" in mime or "video" in ctype or any("height" in r.attrib for r in reps)
-                is_audio = "audio" in mime or "audio" in ctype or any("audio" in r.attrib.get("id", "") for r in reps)
-                if is_video and not video_set:
-                    video_set = aset
-                elif is_audio and not audio_set:
-                    audio_set = aset
-
-            if not audio_set and len(adaptation_sets) > 1:
-                audio_set = adaptation_sets[1]
-            if not video_set and len(adaptation_sets) > 0:
-                video_set = adaptation_sets[0]
+            prepared = _prepare_media_track(
+                client, ep, content_id, audio_quality, video_quality, debug
+            )
 
             if i == 0:
-                video_keys = _keys_for_adaptation_set(keys, video_set)
-                video_base_url, video_rep_id = get_base_url(video_set, True, video_quality)
-                if not video_base_url or not video_rep_id:
-                    raise RuntimeError(
-                        "failed to get the video base URL, maybe the video quality you entered is wrong?"
-                    )
                 video_download_args = (
-                    video_base_url,
-                    video_rep_id,
-                    video_set,
-                    video_keys,
-                    period_duration_seconds,
+                    prepared["video_base_url"],
+                    prepared["video_rep_id"],
+                    prepared["video_set"],
+                    prepared["video_keys"],
+                    prepared["period_duration_seconds"],
                 )
 
             print(f"Downloading {track_title(version.audio_locale)} audio...")
-            audio_keys = _keys_for_adaptation_set(keys, audio_set)
-            audio_base_url, audio_rep_id = get_base_url(audio_set, False, audio_quality)
-            if not audio_base_url or not audio_rep_id:
-                raise RuntimeError(
-                    f"failed to get the audio base URL for {version.audio_locale}, maybe the audio quality you entered is wrong?"
+            try:
+                audio_file = download_parts(
+                    prepared["audio_base_url"],
+                    prepared["audio_rep_id"],
+                    prepared["audio_set"],
+                    prepared["audio_keys"],
+                    ep_title=info.title,
+                    progress_cb=progress_cb,
+                    pool=shared_pool,
+                    track_type="audio",
+                    period_duration_seconds=prepared["period_duration_seconds"],
                 )
-
-            audio_file = download_parts(
-                audio_base_url,
-                audio_rep_id,
-                audio_set,
-                audio_keys,
-                ep_title=info.title,
-                progress_cb=progress_cb,
-                pool=shared_pool,
-                track_type="audio",
-                period_duration_seconds=period_duration_seconds,
-            )
+            except Exception as exc:
+                if not _stream_expired_error(exc):
+                    raise
+                print(
+                    f"\nPlayback stream expired for {track_title(version.audio_locale)}; "
+                    "refreshing MPD and retrying track...",
+                    flush=True,
+                )
+                refreshed_ep = get_episode(
+                    client,
+                    content_id,
+                    debug=debug,
+                    playback_id=version.guid or content_id,
+                )
+                previous_token = active_streams.get(content_id)
+                if previous_token and previous_token != refreshed_ep.token:
+                    delete_stream(client, content_id, previous_token)
+                ep = refreshed_ep
+                playback_cache[content_id] = ep
+                active_streams[content_id] = ep.token
+                prepared = _prepare_media_track(
+                    client, ep, content_id, audio_quality, video_quality, debug
+                )
+                audio_file = download_parts(
+                    prepared["audio_base_url"],
+                    prepared["audio_rep_id"],
+                    prepared["audio_set"],
+                    prepared["audio_keys"],
+                    ep_title=info.title,
+                    progress_cb=progress_cb,
+                    pool=shared_pool,
+                    track_type="audio",
+                    period_duration_seconds=prepared["period_duration_seconds"],
+                )
             audio_tracks.append(
                 MediaTrack(
                     file=audio_file,
@@ -910,17 +994,55 @@ def download_episode(
                 period_duration_seconds,
             ) = video_download_args
             print("Downloading video...")
-            video_file = download_parts(
-                video_base_url,
-                video_rep_id,
-                video_set,
-                video_keys,
-                ep_title=info.title,
-                progress_cb=progress_cb,
-                pool=shared_pool,
-                track_type="video",
-                period_duration_seconds=period_duration_seconds,
-            )
+            try:
+                video_file = download_parts(
+                    video_base_url,
+                    video_rep_id,
+                    video_set,
+                    video_keys,
+                    ep_title=info.title,
+                    progress_cb=progress_cb,
+                    pool=shared_pool,
+                    track_type="video",
+                    period_duration_seconds=period_duration_seconds,
+                )
+            except Exception as exc:
+                if not _stream_expired_error(exc):
+                    raise
+                print(
+                    "\nPlayback stream expired for video; refreshing MPD and retrying track...",
+                    flush=True,
+                )
+                refreshed_ep = get_episode(
+                    client,
+                    base_content_id,
+                    debug=debug,
+                    playback_id=versions[0].guid or base_content_id,
+                )
+                previous_token = active_streams.get(base_content_id)
+                if previous_token and previous_token != refreshed_ep.token:
+                    delete_stream(client, base_content_id, previous_token)
+                playback_cache[base_content_id] = refreshed_ep
+                active_streams[base_content_id] = refreshed_ep.token
+                prepared = _prepare_media_track(
+                    client,
+                    refreshed_ep,
+                    base_content_id,
+                    audio_quality,
+                    video_quality,
+                    debug,
+                )
+                video_file = download_parts(
+                    prepared["video_base_url"],
+                    prepared["video_rep_id"],
+                    prepared["video_set"],
+                    prepared["video_keys"],
+                    ep_title=info.title,
+                    progress_cb=progress_cb,
+                    pool=shared_pool,
+                    track_type="video",
+                    period_duration_seconds=prepared["period_duration_seconds"],
+                )
 
         if not video_file:
             raise RuntimeError("No video file downloaded!")
