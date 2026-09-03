@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
@@ -19,7 +20,14 @@ from .drm import get_license
 from .http_client import CrunchyrollHttpClient
 from .integrity import StreamValidator, atomic_finalize
 from .merger import find_ffmpeg, merge_everything
-from .mpd import expand_timeline, get_base_url, get_pssh, get_default_kid, parse_manifest
+from .mpd import (
+    expand_timeline,
+    get_base_url,
+    get_kids,
+    get_pssh,
+    parse_dash_duration,
+    parse_manifest,
+)
 from .session_pool import ConcurrencyConfig, SessionPool
 from .stream_assembler import StreamAssembler
 from .types import (
@@ -118,7 +126,7 @@ def download_part(
     headers = {
         "Origin": "https://static.crunchyroll.com",
         "Referer": "https://static.crunchyroll.com/",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
     }
 
     if save_path:
@@ -145,18 +153,24 @@ def download_parts(
     pool: Optional[SessionPool] = None,
     concurrency_config: Optional[ConcurrencyConfig] = None,
     track_type: str = "video",
+    period_duration_seconds: Optional[float] = None,
 ) -> str:
     """Download all track segments using high-performance streaming assembly and session pool."""
-    seg_template = None
-    for child in adaptation_set:
-        if _clean_tag(child.tag) == "SegmentTemplate":
-            seg_template = child
-            break
+    # SegmentTemplate may be inherited from AdaptationSet, Representation,
+    # or a parent Period/MPD. Use the same descendant resolution as the
+    # timeline parser so URL patterns and segment counts cannot disagree.
+    seg_template = next(
+        (elem for elem in adaptation_set.iter() if _clean_tag(elem.tag) == "SegmentTemplate"),
+        None,
+    )
 
     init_file = seg_template.attrib.get("initialization", "") if seg_template is not None else ""
     media_file = seg_template.attrib.get("media", "") if seg_template is not None else ""
 
-    timeline = expand_timeline(adaptation_set)
+    timeline = expand_timeline(
+        adaptation_set,
+        period_duration_seconds=period_duration_seconds,
+    )
     total = len(timeline)
 
     # Use existing session pool or create a new dedicated instance
@@ -184,49 +198,64 @@ def download_parts(
             headers = {
                 "Origin": "https://static.crunchyroll.com",
                 "Referer": "https://static.crunchyroll.com/",
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
             }
-            session = pool.get_session() if pool else requests.Session()
-            with session.get(media_url, headers=headers, stream=True, timeout=30) as resp:
-                resp.raise_for_status()
-                content_len_str = resp.headers.get("Content-Length")
-                total_bytes = int(content_len_str) if content_len_str and content_len_str.isdigit() else 0
-                chunk_size = 512 * 1024  # 512 KB per chunk
-                total_chunks = max(1, (total_bytes + chunk_size - 1) // chunk_size) if total_bytes > 0 else 100
+            chunk_size = 512 * 1024
 
-                cur_chunks = 0
-                downloaded_bytes = 0
-                start_time = time.time()
+            def _file_progress(completed_bytes: int, total_bytes: int, speed_mb_s: float) -> None:
+                if total_bytes > 0:
+                    percent = min(100.0, completed_bytes * 100.0 / total_bytes)
+                    progress_text = (
+                        f"\rDownloading {track_type}: {completed_bytes / (1024 * 1024):.1f} / "
+                        f"{total_bytes / (1024 * 1024):.1f} MB ({percent:5.1f}%) "
+                        f"[{speed_mb_s:.2f} MB/s]"
+                    )
+                    callback_total = total_bytes
+                else:
+                    progress_text = (
+                        f"\rDownloading {track_type}: {completed_bytes / (1024 * 1024):.1f} MB "
+                        f"[{speed_mb_s:.2f} MB/s]"
+                    )
+                    callback_total = 0
+                try:
+                    print(progress_text, end="", flush=True)
+                except Exception:
+                    pass
+                if progress_cb:
+                    _invoke_progress_cb(
+                        progress_cb,
+                        ep_title,
+                        completed_bytes,
+                        callback_total,
+                        f"{speed_mb_s:.2f} MB/s",
+                        speed_mb_s,
+                        f"{track_type}-file",
+                    )
 
-                with open(raw_path, "wb", buffering=1024 * 1024) as f:
-                    for chunk in resp.iter_content(chunk_size=chunk_size):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded_bytes += len(chunk)
-                            cur_chunks += 1
-                            elapsed = time.time() - start_time
-                            speed_mb = (downloaded_bytes / elapsed / (1024 * 1024)) if elapsed > 0 else 0.0
-                            speed_str = f"{speed_mb:.2f} MB/s"
-                            pct = (100 * cur_chunks) // total_chunks if total_chunks > 0 else 0
-
-                            if sys.stdout is not None:
-                                try:
-                                    sys.stdout.write(
-                                        f"\rDownloaded {cur_chunks} of {total_chunks} parts ({pct}%) [{speed_str}]"
-                                    )
-                                    sys.stdout.flush()
-                                except Exception:
-                                    pass
-
-                            _invoke_progress_cb(
-                                progress_cb,
-                                ep_title,
-                                cur_chunks,
-                                total_chunks,
-                                speed_str,
-                                speed_mb,
-                                track_type,
-                            )
+            total_bytes = 0
+            start_time = time.time()
+            total_bytes = pool.download_file_stream(
+                media_url,
+                raw_path,
+                headers=headers,
+                timeout=30,
+                chunk_size=chunk_size,
+                progress_callback=_file_progress,
+                parallel_ranges=8,
+                range_size=4 * 1024 * 1024,
+            )
+            elapsed = time.time() - start_time
+            speed_mb = total_bytes / max(elapsed, 0.001) / (1024 * 1024)
+            speed_str = f"{speed_mb:.2f} MB/s"
+            _invoke_progress_cb(
+                progress_cb,
+                ep_title,
+                total_bytes,
+                total_bytes,
+                speed_str,
+                speed_mb,
+                f"{track_type}-file",
+            )
 
             if sys.stdout is not None:
                 try:
@@ -234,11 +263,17 @@ def download_parts(
                 except Exception:
                     pass
 
+            # Probe the complete encrypted source before decryption. This is
+            # essential for SegmentBase manifests, where one BaseURL is the
+            # entire fMP4 rather than a list of independently checked parts.
+            StreamValidator.log_timing(raw_path, f"{track_type} encrypted source")
+
             decrypted_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
             decrypted_path = decrypted_tmp.name
             decrypted_tmp.close()
 
             decrypt_mp4(raw_path, keys, decrypted_path)
+            StreamValidator.log_timing(decrypted_path, f"{track_type} decrypted")
             if os.path.exists(raw_path):
                 try:
                     os.remove(raw_path)
@@ -271,11 +306,12 @@ def download_parts(
         start_time = time.time()
         progress_lock = threading.Lock()
         worker_error: List[Exception] = []
+        active_requests = 0
 
         max_allowed_workers = pool.config.max_workers
 
         def _worker_loop():
-            nonlocal completed_count, downloaded_bytes
+            nonlocal completed_count, downloaded_bytes, active_requests
             while not job_queue.empty() and not worker_error:
                 try:
                     idx, url = job_queue.get_nowait()
@@ -283,10 +319,13 @@ def download_parts(
                     break
 
                 try:
+                    with progress_lock:
+                        active_requests += 1
                     seg_data = pool.download_segment(url)
                     assembler.add_segment(idx, seg_data)
 
                     with progress_lock:
+                        active_requests -= 1
                         completed_count += 1
                         downloaded_bytes += len(seg_data)
                         cur_completed = completed_count
@@ -300,7 +339,8 @@ def download_parts(
                     if sys.stdout is not None:
                         try:
                             sys.stdout.write(
-                                f"\rDownloaded {cur_completed} of {total} segments ({percent}%) [{speed_str}]"
+                                f"\rDownloaded {cur_completed} of {total} segments ({percent}%) "
+                                f"[{speed_str}; {active_requests} active]"
                             )
                             sys.stdout.flush()
                         except Exception:
@@ -317,7 +357,13 @@ def download_parts(
                     )
                 except Exception as ex:
                     with progress_lock:
+                        active_requests = max(0, active_requests - 1)
                         worker_error.append(ex)
+                        failed_count = completed_count
+                    print(
+                        f"\nDownload failed for {track_type} segment {idx}/{total} "
+                        f"after {failed_count} completed: {type(ex).__name__}: {ex}"
+                    )
                     assembler.abort(ex)
                     _invoke_progress_cb(
                         progress_cb,
@@ -361,11 +407,13 @@ def download_parts(
         assembler.finish()
 
         # Step 4: Decrypt raw MP4 to decrypted output temp file
+        StreamValidator.log_timing(raw_path, f"{track_type} encrypted source")
         decrypted_tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
         decrypted_path = decrypted_tmp.name
         decrypted_tmp.close()
 
         decrypt_mp4(raw_path, keys, decrypted_path)
+        StreamValidator.log_timing(decrypted_path, f"{track_type} decrypted")
         if os.path.exists(raw_path):
             try:
                 os.remove(raw_path)
@@ -456,6 +504,10 @@ def download_parts_optimized(
                 except Exception as ex:
                     with progress_lock:
                         worker_error.append(ex)
+                    print(
+                        f"\nDownload failed for optimized segment {idx}/{total}: "
+                        f"{type(ex).__name__}: {ex}"
+                    )
                     assembler.abort(ex)
                     break
                 finally:
@@ -523,17 +575,114 @@ def _locale_map(values: Dict[str, object]) -> Dict[str, object]:
 def _keys_for_adaptation_set(
     keys: Dict[bytes, bytes], adaptation_set: Optional[ET.Element]
 ) -> Dict[bytes, bytes]:
-    """Return the license key matching an adaptation set's CENC default_KID."""
+    """Return license keys matching all CENC KIDs in an adaptation set."""
     if not keys or adaptation_set is None:
         return keys
-    kid = get_default_kid(adaptation_set)
-    if kid is None:
+    kids = get_kids(adaptation_set)
+    if not kids:
         return keys
+    normalized_keys = {}
     for candidate, value in keys.items():
-        if candidate.replace(b"-", b"").lower() == kid.lower():
-            return {candidate: value}
-    print(f"Warning: Exact KID {kid.hex()} not matched in license keys, falling back to all keys")
-    return keys
+        candidate_bytes = bytes(candidate).lower()
+        normalized_keys[candidate_bytes] = (candidate, value)
+        if len(candidate_bytes) == 16:
+            normalized_keys.setdefault(
+                uuid.UUID(bytes=candidate_bytes).bytes_le,
+                (candidate, value),
+            )
+    selected = {}
+    missing = []
+    for kid in kids:
+        kid_bytes = bytes(kid).lower()
+        match = normalized_keys.get(kid_bytes)
+        if match is None and len(kid_bytes) == 16:
+            match = normalized_keys.get(uuid.UUID(bytes=kid_bytes).bytes_le)
+        if match is None:
+            missing.append(kid.hex())
+        else:
+            selected[match[0]] = match[1]
+    if missing:
+        print(
+            "Warning: Exact adaptation-set KID(s) not matched in license keys, "
+            f"falling back to all keys: {', '.join(missing)}"
+        )
+        return keys
+    return selected
+
+
+def _stream_expired_error(error: Exception) -> bool:
+    """Return whether a media failure likely means signed playback URLs expired."""
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in ("http 401", "http 403", "http 410", "unauthorized", "forbidden")
+    )
+
+
+def _prepare_media_track(
+    client: CrunchyrollHttpClient,
+    ep: PlaybackStream,
+    content_id: str,
+    audio_quality: str,
+    video_quality: str,
+    debug: bool,
+) -> Dict[str, object]:
+    """Fetch a current MPD and license keys and resolve its media sets."""
+    manifest = parse_manifest(client, ep.manifest_url, debug=debug)
+    pssh = get_pssh(manifest)
+    if not pssh:
+        raise RuntimeError("PSSH not found in MPD manifest")
+
+    keys = get_license(client, pssh, content_id, ep.token)
+    periods = [e for e in manifest if _clean_tag(e.tag) == "Period"]
+    period = periods[0] if periods else manifest
+    period_duration_seconds = parse_dash_duration(period.attrib.get("duration"))
+    if period_duration_seconds is None:
+        period_duration_seconds = parse_dash_duration(
+            manifest.attrib.get("mediaPresentationDuration")
+        )
+    adaptation_sets = [e for e in period if _clean_tag(e.tag) == "AdaptationSet"]
+
+    video_set = None
+    audio_set = None
+    for aset in adaptation_sets:
+        mime = aset.attrib.get("mimeType", "")
+        ctype = aset.attrib.get("contentType", "")
+        reps = [r for r in aset if _clean_tag(r.tag) == "Representation"]
+        is_video = "video" in mime or "video" in ctype or any(
+            "height" in r.attrib for r in reps
+        )
+        is_audio = "audio" in mime or "audio" in ctype or any(
+            "audio" in r.attrib.get("id", "") for r in reps
+        )
+        if is_video and video_set is None:
+            video_set = aset
+        elif is_audio and audio_set is None:
+            audio_set = aset
+
+    if audio_set is None and len(adaptation_sets) > 1:
+        audio_set = adaptation_sets[1]
+    if video_set is None and adaptation_sets:
+        video_set = adaptation_sets[0]
+
+    audio_base_url, audio_rep_id = get_base_url(audio_set, False, audio_quality)
+    if not audio_base_url or not audio_rep_id:
+        raise RuntimeError("failed to get the audio base URL")
+    video_base_url, video_rep_id = get_base_url(video_set, True, video_quality)
+    if not video_base_url or not video_rep_id:
+        raise RuntimeError("failed to get the video base URL")
+
+    return {
+        "audio_set": audio_set,
+        "audio_keys": _keys_for_adaptation_set(keys, audio_set),
+        "audio_base_url": audio_base_url,
+        "audio_rep_id": audio_rep_id,
+        "video_set": video_set,
+        "video_keys": _keys_for_adaptation_set(keys, video_set),
+        "video_base_url": video_base_url,
+        "video_rep_id": video_rep_id,
+        "period_duration_seconds": period_duration_seconds,
+    }
 
 
 def download_episode(
@@ -547,6 +696,7 @@ def download_episode(
     debug: bool = False,
     progress_cb: Optional[Callable] = None,
     concurrency_config: Optional[ConcurrencyConfig] = None,
+    force_download: bool = False,
 ) -> str:
     """download all streams for an episode and mux to mkv using shared session pooling"""
     audio_all = _is_all_tracks(audio_langs)
@@ -603,6 +753,30 @@ def download_episode(
         f"subtitles=[{', '.join(track_title(locale) for locale in subs_langs) or 'all available'}]"
     )
 
+    output_dir = sanitize_filename(info.episode_metadata.series_title)
+    os.makedirs(output_dir, exist_ok=True)
+    filename = (
+        f"{sanitize_filename(info.episode_metadata.series_title)} "
+        f"S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d} - "
+        f"{sanitize_filename(info.title)} [{video_quality}].mkv"
+    )
+    output_filename = os.path.join(output_dir, filename)
+
+    # Check completed output before making playback/subtitle requests. This
+    # avoids network work, and avoids hanging on an episode already downloaded.
+    if os.path.exists(output_filename) and not force_download:
+        sz = os.path.getsize(output_filename)
+        if sz > 10 * 1024 * 1024:
+            print(f"Skipping (file already exists): {output_filename} ({sz / (1024*1024):.1f} MB)")
+            return output_filename
+        print(f"Existing file is corrupted/partial ({sz} bytes), re-downloading...")
+        try:
+            os.remove(output_filename)
+        except Exception:
+            pass
+    elif os.path.exists(output_filename) and force_download:
+        print(f"Force download enabled; replacing existing file: {output_filename}")
+
     # Initialize shared SessionPool across all tracks for connection reuse
     shared_pool = SessionPool(
         config=concurrency_config
@@ -618,7 +792,13 @@ def download_episode(
 
     try:
         print("Requesting playback stream...")
-        first_episode = get_episode(client, base_content_id, debug=debug)
+        first_playback_id = versions[0].guid or base_content_id
+        first_episode = get_episode(
+            client,
+            base_content_id,
+            debug=debug,
+            playback_id=first_playback_id,
+        )
         playback_cache[base_content_id] = first_episode
         active_streams[base_content_id] = first_episode.token
 
@@ -629,7 +809,12 @@ def download_episode(
             for version in info.episode_metadata.versions:
                 if version.guid != base_content_id:
                     print(f"Checking subtitle source: {track_title(version.audio_locale)}...")
-                    v_ep = get_episode(client, version.guid, debug=debug)
+                    v_ep = get_episode(
+                        client,
+                        version.guid,
+                        debug=debug,
+                        playback_id=version.guid,
+                    )
                     playback_cache[version.guid] = v_ep
                     active_streams[version.guid] = v_ep.token
                     for locale, subtitle in v_ep.subtitles.items():
@@ -662,27 +847,6 @@ def download_episode(
         if missing_subtitles:
             print(f"Warning: Subtitle tracks unavailable: {', '.join(missing_subtitles)}")
 
-        output_dir = sanitize_filename(info.episode_metadata.series_title)
-        os.makedirs(output_dir, exist_ok=True)
-        filename = (
-            f"{sanitize_filename(info.episode_metadata.series_title)} "
-            f"S{info.episode_metadata.season_number:02d}E{info.episode_metadata.episode_number:02d} - "
-            f"{sanitize_filename(info.title)} [{video_quality}].mkv"
-        )
-        output_filename = os.path.join(output_dir, filename)
-
-        if os.path.exists(output_filename):
-            sz = os.path.getsize(output_filename)
-            if sz > 10 * 1024 * 1024:
-                print(f"Skipping (file already exists): {output_filename} ({sz / (1024*1024):.1f} MB)")
-                return output_filename
-            else:
-                print(f"Existing file is corrupted/partial ({sz} bytes), re-downloading...")
-                try:
-                    os.remove(output_filename)
-                except Exception:
-                    pass
-
         sub_tracks: List[MediaTrack] = []
         for loc in subs_langs:
             subtitle = subtitle_map.get(loc.lower())
@@ -708,6 +872,7 @@ def download_episode(
 
         video_file: Optional[str] = None
         audio_tracks: List[MediaTrack] = []
+        video_download_args = None
 
         # Prepare track metadata
         audio_descriptors = []
@@ -718,57 +883,92 @@ def download_episode(
                 content_id = version.guid
                 ep = playback_cache.get(content_id)
                 if ep is None:
-                    ep = get_episode(client, content_id, debug=debug)
+                    ep = get_episode(
+                        client,
+                        content_id,
+                        debug=debug,
+                        playback_id=version.guid,
+                    )
                     playback_cache[content_id] = ep
                     active_streams[content_id] = ep.token
 
-            manifest = parse_manifest(client, ep.manifest_url, debug=debug)
-            pssh = get_pssh(manifest)
-            if not pssh:
-                raise RuntimeError("PSSH not found in MPD manifest")
+            # Subtitle discovery can happen well before media download. Get
+            # a fresh playback session immediately before using its manifest,
+            # license, and signed media URLs so an aged stream token does not
+            # expire halfway through a long multi-track episode.
+            refreshed_ep = get_episode(
+                client,
+                content_id,
+                debug=debug,
+                playback_id=version.guid or content_id,
+            )
+            previous_token = active_streams.get(content_id)
+            if previous_token and previous_token != refreshed_ep.token:
+                delete_stream(client, content_id, previous_token)
+            ep = refreshed_ep
+            playback_cache[content_id] = ep
+            active_streams[content_id] = ep.token
 
-            keys = get_license(client, pssh, content_id, ep.token)
+            prepared = _prepare_media_track(
+                client, ep, content_id, audio_quality, video_quality, debug
+            )
 
-            periods = [e for e in manifest if _clean_tag(e.tag) == "Period"]
-            period = periods[0] if periods else manifest
-            adaptation_sets = [e for e in period if _clean_tag(e.tag) == "AdaptationSet"]
-
-            video_set = None
-            audio_set = None
-            for aset in adaptation_sets:
-                mime = aset.attrib.get("mimeType", "")
-                ctype = aset.attrib.get("contentType", "")
-                reps = [r for r in aset if _clean_tag(r.tag) == "Representation"]
-                is_video = "video" in mime or "video" in ctype or any("height" in r.attrib for r in reps)
-                is_audio = "audio" in mime or "audio" in ctype or any("audio" in r.attrib.get("id", "") for r in reps)
-                if is_video and not video_set:
-                    video_set = aset
-                elif is_audio and not audio_set:
-                    audio_set = aset
-
-            if not audio_set and len(adaptation_sets) > 1:
-                audio_set = adaptation_sets[1]
-            if not video_set and len(adaptation_sets) > 0:
-                video_set = adaptation_sets[0]
-
-            print(f"Downloading {track_title(version.audio_locale)} audio...")
-            audio_keys = _keys_for_adaptation_set(keys, audio_set)
-            audio_base_url, audio_rep_id = get_base_url(audio_set, False, audio_quality)
-            if not audio_base_url or not audio_rep_id:
-                raise RuntimeError(
-                    f"failed to get the audio base URL for {version.audio_locale}, maybe the audio quality you entered is wrong?"
+            if i == 0:
+                video_download_args = (
+                    prepared["video_base_url"],
+                    prepared["video_rep_id"],
+                    prepared["video_set"],
+                    prepared["video_keys"],
+                    prepared["period_duration_seconds"],
                 )
 
-            audio_file = download_parts(
-                audio_base_url,
-                audio_rep_id,
-                audio_set,
-                audio_keys,
-                ep_title=info.title,
-                progress_cb=progress_cb,
-                pool=shared_pool,
-                track_type="audio",
-            )
+            print(f"Downloading {track_title(version.audio_locale)} audio...")
+            try:
+                audio_file = download_parts(
+                    prepared["audio_base_url"],
+                    prepared["audio_rep_id"],
+                    prepared["audio_set"],
+                    prepared["audio_keys"],
+                    ep_title=info.title,
+                    progress_cb=progress_cb,
+                    pool=shared_pool,
+                    track_type="audio",
+                    period_duration_seconds=prepared["period_duration_seconds"],
+                )
+            except Exception as exc:
+                if not _stream_expired_error(exc):
+                    raise
+                print(
+                    f"\nPlayback stream expired for {track_title(version.audio_locale)}; "
+                    "refreshing MPD and retrying track...",
+                    flush=True,
+                )
+                refreshed_ep = get_episode(
+                    client,
+                    content_id,
+                    debug=debug,
+                    playback_id=version.guid or content_id,
+                )
+                previous_token = active_streams.get(content_id)
+                if previous_token and previous_token != refreshed_ep.token:
+                    delete_stream(client, content_id, previous_token)
+                ep = refreshed_ep
+                playback_cache[content_id] = ep
+                active_streams[content_id] = ep.token
+                prepared = _prepare_media_track(
+                    client, ep, content_id, audio_quality, video_quality, debug
+                )
+                audio_file = download_parts(
+                    prepared["audio_base_url"],
+                    prepared["audio_rep_id"],
+                    prepared["audio_set"],
+                    prepared["audio_keys"],
+                    ep_title=info.title,
+                    progress_cb=progress_cb,
+                    pool=shared_pool,
+                    track_type="audio",
+                    period_duration_seconds=prepared["period_duration_seconds"],
+                )
             audio_tracks.append(
                 MediaTrack(
                     file=audio_file,
@@ -781,14 +981,20 @@ def download_episode(
                 + (" (default)" if audio_tracks[-1].is_default else "")
             )
 
-            if i == 0:
-                print("Downloading video...")
-                video_keys = _keys_for_adaptation_set(keys, video_set)
-                video_base_url, video_rep_id = get_base_url(video_set, True, video_quality)
-                if not video_base_url or not video_rep_id:
-                    raise RuntimeError(
-                        "failed to get the video base URL, maybe the video quality you entered is wrong?"
-                    )
+        # Download video only after every requested audio track has completed.
+        # All playback sessions remain active until the final cleanup block,
+        # because manifests and licenses for later tracks may still depend on
+        # their respective tokens.
+        if video_download_args is not None:
+            (
+                video_base_url,
+                video_rep_id,
+                video_set,
+                video_keys,
+                period_duration_seconds,
+            ) = video_download_args
+            print("Downloading video...")
+            try:
                 video_file = download_parts(
                     video_base_url,
                     video_rep_id,
@@ -798,17 +1004,45 @@ def download_episode(
                     progress_cb=progress_cb,
                     pool=shared_pool,
                     track_type="video",
+                    period_duration_seconds=period_duration_seconds,
                 )
-
-            # The first playback session belongs to base_content_id, not
-            # necessarily to the first metadata version GUID. Skip a cached
-            # session if subtitle discovery already released it.
-            if content_id in active_streams:
-                success = delete_stream(client, content_id, ep.token)
-                if not success:
-                    print("Failed to delete stream (session token might expired)")
-                else:
-                    active_streams.pop(content_id, None)
+            except Exception as exc:
+                if not _stream_expired_error(exc):
+                    raise
+                print(
+                    "\nPlayback stream expired for video; refreshing MPD and retrying track...",
+                    flush=True,
+                )
+                refreshed_ep = get_episode(
+                    client,
+                    base_content_id,
+                    debug=debug,
+                    playback_id=versions[0].guid or base_content_id,
+                )
+                previous_token = active_streams.get(base_content_id)
+                if previous_token and previous_token != refreshed_ep.token:
+                    delete_stream(client, base_content_id, previous_token)
+                playback_cache[base_content_id] = refreshed_ep
+                active_streams[base_content_id] = refreshed_ep.token
+                prepared = _prepare_media_track(
+                    client,
+                    refreshed_ep,
+                    base_content_id,
+                    audio_quality,
+                    video_quality,
+                    debug,
+                )
+                video_file = download_parts(
+                    prepared["video_base_url"],
+                    prepared["video_rep_id"],
+                    prepared["video_set"],
+                    prepared["video_keys"],
+                    ep_title=info.title,
+                    progress_cb=progress_cb,
+                    pool=shared_pool,
+                    track_type="video",
+                    period_duration_seconds=prepared["period_duration_seconds"],
+                )
 
         if not video_file:
             raise RuntimeError("No video file downloaded!")
@@ -876,6 +1110,7 @@ def download_season(
     debug: bool = False,
     progress_cb: Optional[Callable] = None,
     concurrency_config: Optional[ConcurrencyConfig] = None,
+    force_download: bool = False,
 ) -> None:
     """download an entire season"""
     print(f"Found {len(episodes)} episodes in this season!\n")
@@ -912,6 +1147,7 @@ def download_season(
             debug=debug,
             progress_cb=progress_cb,
             concurrency_config=concurrency_config,
+            force_download=force_download,
         )
         print()
 
@@ -927,6 +1163,7 @@ def download_series(
     progress_cb: Optional[Callable] = None,
     debug: bool = False,
     concurrency_config: Optional[ConcurrencyConfig] = None,
+    force_download: bool = False,
 ) -> None:
     """grab everything for a series"""
     # Catalog endpoints require concrete locales. Sending ``all`` here makes
@@ -993,5 +1230,6 @@ def download_series(
             debug=debug,
             progress_cb=progress_cb,
             concurrency_config=concurrency_config,
+            force_download=force_download,
         )
         print()

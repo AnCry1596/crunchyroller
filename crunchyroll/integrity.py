@@ -44,7 +44,8 @@ class StreamValidator:
         cmd = [
             ffprobe_bin,
             "-v", "error",
-            "-show_entries", "format=duration,nb_streams,bit_rate,size:stream=index,codec_type,codec_name:stream_tags",
+            "-show_entries",
+            "format=duration,nb_streams,bit_rate,size:stream=index,codec_type,codec_name,start_pts,start_time,duration_ts,duration,time_base,nb_frames:stream_tags",
             "-of", "json",
             file_path,
         ]
@@ -63,6 +64,40 @@ class StreamValidator:
             return json.loads(res.stdout)
         except json.JSONDecodeError as e:
             raise RuntimeError(f"Failed to parse ffprobe JSON output: {e}\nRaw output: {res.stdout}") from e
+
+    @staticmethod
+    def log_timing(file_path: str, label: str = "media") -> None:
+        """Log stream timing information useful for diagnosing A/V drift."""
+        try:
+            data = StreamValidator.probe_file(file_path)
+        except Exception as exc:
+            logger.warning("Unable to probe %s timing for %s: %s", label, file_path, exc)
+            return
+
+        for stream in data.get("streams", []):
+            if stream.get("codec_type") not in {"audio", "video"}:
+                continue
+            message = (
+                f"[timing] {label}: stream={stream.get('index')} "
+                f"type={stream.get('codec_type')} codec={stream.get('codec_name')} "
+                f"start={stream.get('start_time')} duration={stream.get('duration')} "
+                f"duration_ts={stream.get('duration_ts')} "
+                f"time_base={stream.get('time_base')} frames={stream.get('nb_frames')}"
+            )
+            print(message, flush=True)
+            logger.info(
+                "%s timing: stream=%s type=%s codec=%s start=%s duration=%s "
+                "duration_ts=%s time_base=%s frames=%s",
+                label,
+                stream.get("index"),
+                stream.get("codec_type"),
+                stream.get("codec_name"),
+                stream.get("start_time"),
+                stream.get("duration"),
+                stream.get("duration_ts"),
+                stream.get("time_base"),
+                stream.get("nb_frames"),
+            )
 
     @staticmethod
     def verify_mkv(
@@ -100,6 +135,13 @@ class StreamValidator:
         streams = data.get("streams", [])
         format_info = data.get("format", {})
 
+        def _stream_end(stream: Dict[str, Any]) -> Optional[float]:
+            start = float(stream.get("start_time") or 0.0)
+            duration = stream.get("duration")
+            if duration is not None:
+                return start + float(duration)
+            return None
+
         # 1. Video stream inspection
         video_streams = [s for s in streams if s.get("codec_type") == "video"]
         if expected_video:
@@ -117,6 +159,24 @@ class StreamValidator:
                 f"Audio track count mismatch: expected at least {min_audio_tracks}, found {len(audio_streams)}",
                 data,
             )
+
+        # A stream-copy mux should not make audio finish materially earlier
+        # than video. Keep this as a diagnostic warning rather than rejecting
+        # the file because some dubs legitimately have different boundaries.
+        if video_streams and audio_streams:
+            video_end = _stream_end(video_streams[0])
+            if video_end is not None:
+                for index, audio in enumerate(audio_streams):
+                    audio_end = _stream_end(audio)
+                    if audio_end is not None and video_end - audio_end > 2.0:
+                        logger.warning(
+                            "Audio stream %d ends %.3fs before video "
+                            "(video_end=%.3f, audio_end=%.3f)",
+                            index,
+                            video_end - audio_end,
+                            video_end,
+                            audio_end,
+                        )
 
         # 3. Subtitle track count inspection
         sub_streams = [s for s in streams if s.get("codec_type") == "subtitle"]

@@ -10,7 +10,7 @@ def get_access_token(etp_rt: str) -> str:
     headers = {
         "Authorization": "Basic bm9haWhkZXZtXzZpeWcwYThsMHE6",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
     }
     cookies = {
         "device_id": DEVICE_ID,
@@ -18,7 +18,7 @@ def get_access_token(etp_rt: str) -> str:
     }
     data = {
         "device_id": DEVICE_ID,
-        "device_type": "Firefox on Linux",
+        "device_type": "Chrome on Windows",
         "grant_type": "etp_rt_cookie",
     }
 

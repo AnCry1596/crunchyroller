@@ -62,6 +62,7 @@ STATE = {
         "audio_quality": initial_cfg.get("audio_quality", "192k"),
         "audio_lang":    initial_cfg.get("audio_lang", "ja-JP"),
         "subs_lang":     initial_cfg.get("subs_lang", "en-US"),
+        "force_download": bool(initial_cfg.get("force_download", False)),
     },
     "download": {
         "status":      "idle",
@@ -72,6 +73,7 @@ STATE = {
         "segs_done":   0,
         "segs_total":  0,
         "speed":       "",
+        "complete_file": False,
         "overall_pct": 0.0,
         "track_pct":   0.0,
         "log":         [],
@@ -87,13 +89,13 @@ def _log(msg):
             STATE["download"]["log"].pop(0)
 
 
-def _run_download(items, vq, aq, al, sl):
+def _run_download(items, vq, aq, al, sl, force_download=False):
     ep_total = len(items)
     with LOCK:
         STATE["download"].update(
             status="running", episode="", speed="", track="",
             segs_done=0, segs_total=0, ep_idx=0, ep_total=ep_total,
-            overall_pct=0.0, track_pct=0.0, log=[],
+            overall_pct=0.0, track_pct=0.0, complete_file=False, log=[],
         )
 
     client = CrunchyrollHttpClient(STATE["etp_rt"])
@@ -123,6 +125,9 @@ def _run_download(items, vq, aq, al, sl):
 
                 track_type = str(status).lower() if status else "video"
                 frac = (cur / tot) if tot > 0 else 0.0
+                complete_file = track_type.endswith("-file")
+                if complete_file:
+                    track_type = track_type[:-5]
 
                 if "audio" in track_type:
                     # Audio represents the first 15% of the episode
@@ -149,11 +154,13 @@ def _run_download(items, vq, aq, al, sl):
                     STATE["download"]["track"]        = display_track
                     STATE["download"]["track_pct"]   = round(frac * 100, 1) if "mux" not in track_type else 100.0
                     STATE["download"]["overall_pct"] = min(overall, cap)
+                    STATE["download"]["complete_file"] = complete_file
 
             download_episode(
                 client=client, base_content_id=ep_id, info=info,
                 audio_langs=a_langs, subs_langs=s_langs,
                 video_quality=vq, audio_quality=aq, progress_cb=_cb,
+                force_download=force_download,
             )
             with LOCK:
                 STATE["download"]["overall_pct"] = round(((idx + 1) / ep_total) * 100, 1)
@@ -291,7 +298,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         elif path == "/api/config":
             with LOCK:
-                for k in ("video_quality","audio_quality","audio_lang","subs_lang"):
+                for k in ("video_quality","audio_quality","audio_lang","subs_lang","force_download"):
                     if k in data: STATE["config"][k] = data[k]
             save_config(STATE["config"])
             self._json({"success": True})
@@ -348,6 +355,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 data.get("audio_quality", c["audio_quality"]),
                 data.get("audio_lang", c["audio_lang"]),
                 data.get("subs_lang", c["subs_lang"]),
+                bool(data.get("force_download", c.get("force_download", False))),
             )).start()
             self._json({"success": True})
         else:

@@ -1,4 +1,5 @@
 import json
+import time
 from typing import List, Optional, Tuple, Dict, Any
 from urllib.parse import quote, urlparse
 
@@ -30,7 +31,6 @@ _SUBTITLE_LOCALE_ALIASES = {
     "ไทย": "th-TH",
     "thai": "th-TH",
 }
-
 
 def _subtitle_locale(raw_key: object, raw_language: object) -> str:
     """Return a stable locale key from a subtitle API record."""
@@ -74,20 +74,53 @@ def parse_url_type(url: str) -> Tuple[str, str]:
 
 
 def get_episode(
-    client: CrunchyrollHttpClient, content_id: str, debug: bool = False
+    client: CrunchyrollHttpClient,
+    content_id: str,
+    debug: bool = False,
+    playback_id: Optional[str] = None,
 ) -> PlaybackStream:
-    """grab the stream url and widevine token for an episode"""
-    url = f"https://www.crunchyroll.com/playback/v3/{content_id}/web/firefox/play"
-    resp = client.do_request("GET", url)
-    resp.raise_for_status()
+    """Grab a stream URL and token from the web playback endpoint."""
+    web_url = f"https://www.crunchyroll.com/playback/v3/{quote(content_id, safe='')}/web/chrome/play"
+    started_at = time.monotonic()
+    print(
+        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
+        f"Request started for content {content_id} "
+        f"(timeout={client.DEFAULT_REQUEST_TIMEOUT}s)...",
+        flush=True,
+    )
 
-    data = resp.json()
-    if debug:
-        print("\n--- DEBUG PLAYBACK STREAM JSON ---")
-        print(json.dumps(data, indent=2))
+    try:
+        response = client.do_request("GET", web_url)
+    except Exception as exc:
+        elapsed = time.monotonic() - started_at
+        print(
+            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
+            f"Request failed for content {content_id} "
+            f"after {elapsed:.1f}s: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        raise
+
+    elapsed = time.monotonic() - started_at
+    print(
+        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
+        f"Response received for content {content_id}: "
+        f"HTTP {response.status_code} after {elapsed:.1f}s",
+        flush=True,
+    )
+    response.raise_for_status()
+
+    try:
+        data = response.json()
+    except Exception:
+        raise
+
+    if not isinstance(data, dict):
+        raise RuntimeError("Playback response was not a JSON object")
+
     manifest_url = data.get("url", "")
     if not manifest_url:
-        hardsubs = data.get("hardsubs", {})
+        hardsubs = data.get("hardsubs") or data.get("hardSubs") or {}
         if "en-US" in hardsubs:
             manifest_url = hardsubs["en-US"].get("url", "")
         elif "" in hardsubs:
@@ -95,6 +128,10 @@ def get_episode(
         elif hardsubs:
             first_key = next(iter(hardsubs))
             manifest_url = hardsubs[first_key].get("url", "")
+
+    if debug:
+        print("\n--- DEBUG PLAYBACK STREAM JSON ---")
+        print(json.dumps(data, indent=2))
 
     subtitles_raw = data.get("subtitles", {})
     subtitles = {}

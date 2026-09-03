@@ -169,6 +169,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             audio_quality,
             debug=args.debug_manifest,
             concurrency_config=concurrency_cfg,
+            force_download=getattr(args, "force_download", False),
         )
     elif content_type == "series":
         download_series(
@@ -181,6 +182,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             season_filter=args.season or 0,
             debug=args.debug_manifest,
             concurrency_config=concurrency_cfg,
+            force_download=getattr(args, "force_download", False),
         )
     elif content_type == "season":
         episodes = get_season_episodes(client, content_id, primary_audio, primary_subs)
@@ -193,6 +195,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             episodes,
             debug=args.debug_manifest,
             concurrency_config=concurrency_cfg,
+            force_download=getattr(args, "force_download", False),
         )
 
 
@@ -254,6 +257,11 @@ def main() -> None:
         "--debug-manifest",
         action="store_true",
         help="Log raw episode playback JSON and manifest XML",
+    )
+    parser.add_argument(
+        "--force-download",
+        action="store_true",
+        help="Redownload completed episodes and atomically replace existing MKV files",
     )
 
     args = parser.parse_args()

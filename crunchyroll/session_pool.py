@@ -6,8 +6,10 @@ import queue
 import socket
 import threading
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Dict, Generator, List, Optional, Tuple, Union
+from urllib.parse import urlsplit
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -156,8 +158,20 @@ class SessionPool:
     DEFAULT_HEADERS = {
         "Origin": "https://static.crunchyroll.com",
         "Referer": "https://static.crunchyroll.com/",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
     }
+    RATE_LIMIT_INITIAL_WAIT = 30.0
+    MAX_RATE_LIMIT_WAIT = 300.0
+
+    def _rate_limit_wait(self, response: requests.Response, retry_number: int) -> float:
+        """Return a 30s, 60s, 120s... flood-wait delay for 420/429."""
+        retry_after = response.headers.get("Retry-After", "")
+        try:
+            server_wait = float(retry_after)
+        except (TypeError, ValueError):
+            server_wait = 0.0
+        scheduled_wait = self.RATE_LIMIT_INITIAL_WAIT * (2 ** max(retry_number - 1, 0))
+        return min(max(scheduled_wait, server_wait), self.MAX_RATE_LIMIT_WAIT)
 
     def __init__(
         self,
@@ -188,10 +202,10 @@ class SessionPool:
         retry_strategy = Retry(
             total=self.max_retries,
             backoff_factor=self.backoff_factor,
-            # HTTP 420 is handled by CrunchyrollHttpClient, which reports
-            # the cooldown to the user. Retrying it here hides progress and
-            # can make metadata requests appear to hang.
-            status_forcelist=[429, 500, 502, 503, 504],
+            # HTTP 420 and 429 are handled explicitly by the callers, which
+            # report the cooldown and can honor Retry-After. Retrying them
+            # here hides progress and can make API requests appear to hang.
+            status_forcelist=[500, 502, 503, 504],
             raise_on_status=False,
         )
         adapter = TCPKeepAliveAdapter(
@@ -216,6 +230,12 @@ class SessionPool:
             return self.scaler.get_current_workers()
         return self.config.initial_workers
 
+    @staticmethod
+    def _safe_url(url: str) -> str:
+        """Return a diagnostic URL without query tokens or credentials."""
+        parsed = urlsplit(url)
+        return parsed.path or parsed.netloc or "<segment>"
+
     def download_segment(
         self,
         url: str,
@@ -232,36 +252,75 @@ class SessionPool:
         last_exception: Optional[Exception] = None
         while attempt < self.max_retries:
             start_t = time.time()
+            attempt_number = attempt + 1
             try:
-                resp = self._session.get(url, headers=req_headers, timeout=t_out)
-                duration = time.time() - start_t
+                with self._session.get(url, headers=req_headers, timeout=t_out) as resp:
+                    duration = time.time() - start_t
 
-                if resp.status_code == 200:
-                    data = resp.content
-                    self.scaler.record_success(duration, len(data))
-                    return data
-                elif resp.status_code in (420, 429):
-                    self.scaler.record_failure(resp.status_code)
-                    wait_time = (self.backoff_factor ** attempt) * 2.0
-                    time.sleep(wait_time)
-                elif 400 <= resp.status_code < 500:
-                    # Immediate failure on non-retryable 4xx client errors (e.g. 404 Not Found)
-                    self.scaler.record_failure(resp.status_code)
-                    raise RuntimeError(f"HTTP {resp.status_code} client error: {url}")
-                else:
-                    self.scaler.record_failure(resp.status_code)
-                    if attempt < self.max_retries - 1:
-                        time.sleep(self.backoff_factor * attempt)
+                    if resp.status_code == 200:
+                        data = resp.content
+                        self.scaler.record_success(duration, len(data))
+                        return data
+                    if resp.status_code in (420, 429):
+                        self.scaler.record_failure(resp.status_code)
+                        last_exception = RuntimeError(
+                            f"HTTP {resp.status_code} rate limit for {self._safe_url(url)}"
+                        )
+                        retry_after = resp.headers.get("Retry-After", "")
+                        wait_time = self._rate_limit_wait(resp, attempt_number)
+                        logger.warning(
+                            "Rate limited downloading %s (HTTP %s, attempt %s/%s); "
+                            "waiting %.1fs",
+                            self._safe_url(url),
+                            resp.status_code,
+                            attempt_number,
+                            self.max_retries,
+                            wait_time,
+                        )
+                        if attempt < self.max_retries - 1:
+                            time.sleep(wait_time)
+                    elif 400 <= resp.status_code < 500:
+                        self.scaler.record_failure(resp.status_code)
+                        raise RuntimeError(
+                            f"HTTP {resp.status_code} client error for {self._safe_url(url)}"
+                        )
+                    else:
+                        self.scaler.record_failure(resp.status_code)
+                        logger.warning(
+                            "Transient HTTP %s downloading %s (attempt %s/%s)",
+                            resp.status_code,
+                            self._safe_url(url),
+                            attempt_number,
+                            self.max_retries,
+                        )
+                        if attempt < self.max_retries - 1:
+                            time.sleep(self.backoff_factor * max(1, attempt_number))
+            except RuntimeError:
+                # Preserve non-retryable HTTP errors instead of retrying and
+                # replacing the useful status with a generic final exception.
+                raise
             except Exception as e:
                 last_exception = e
                 duration = time.time() - start_t
                 self.scaler.record_failure(0)
+                logger.warning(
+                    "Segment request failed for %s (attempt %s/%s, %.1fs): %s: %s",
+                    self._safe_url(url),
+                    attempt_number,
+                    self.max_retries,
+                    duration,
+                    type(e).__name__,
+                    e,
+                )
                 if attempt < self.max_retries - 1:
-                    time.sleep(self.backoff_factor * attempt)
+                    time.sleep(self.backoff_factor * max(1, attempt_number))
 
             attempt += 1
 
-        err_msg = f"Failed to download segment after {self.max_retries} attempts: {url}"
+        err_msg = (
+            f"Failed to download segment after {self.max_retries} attempts: "
+            f"{self._safe_url(url)}"
+        )
         if last_exception:
             err_msg += f" (Last error: {last_exception})"
         raise RuntimeError(err_msg)
@@ -294,6 +353,275 @@ class SessionPool:
         except Exception as e:
             self.scaler.record_failure(0)
             raise e
+
+    def download_file_stream(
+        self,
+        url: str,
+        output_path: str,
+        timeout: Optional[int] = None,
+        headers: Optional[Dict[str, str]] = None,
+        chunk_size: Optional[int] = None,
+        progress_callback=None,
+        parallel_ranges: int = 8,
+        range_size: int = 4 * 1024 * 1024,
+    ) -> int:
+        """Stream a complete media file to disk and reject truncated responses.
+
+        ``progress_callback`` receives ``(written_bytes, expected_bytes,
+        speed_mb_s)`` periodically and once more when the response completes.
+        ``expected_bytes`` is zero when the server does not provide a numeric
+        Content-Length.
+        """
+        # Use a separate read timeout so a CDN that stops sending bytes cannot
+        # leave the complete-file branch waiting indefinitely.
+        t_out = (10, timeout or self.timeout)
+        c_size = chunk_size or self.config.chunk_size
+        req_headers = dict(self.DEFAULT_HEADERS)
+        if headers:
+            req_headers.update(headers)
+
+        if parallel_ranges > 1:
+            ranged_size = self._download_file_ranges(
+                url,
+                output_path,
+                t_out,
+                req_headers,
+                c_size,
+                parallel_ranges,
+                range_size,
+                progress_callback,
+            )
+            if ranged_size is not None:
+                return ranged_size
+
+        last_exception: Optional[Exception] = None
+        for attempt in range(self.max_retries):
+            started = time.time()
+            last_progress = started
+            written = 0
+            expected_bytes: Optional[int] = None
+            try:
+                with self._session.get(
+                    url, headers=req_headers, stream=True, timeout=t_out
+                ) as resp:
+                    if resp.status_code in (420, 429):
+                        self.scaler.record_failure(resp.status_code)
+                        retry_after = resp.headers.get("Retry-After", "")
+                        wait_time = self._rate_limit_wait(resp, attempt + 1)
+                        if attempt < self.max_retries - 1:
+                            time.sleep(wait_time)
+                            continue
+                        resp.raise_for_status()
+
+                    if 400 <= resp.status_code < 500:
+                        self.scaler.record_failure(resp.status_code)
+                        raise RuntimeError(
+                            f"HTTP {resp.status_code} client error for {self._safe_url(url)}"
+                        )
+                    resp.raise_for_status()
+                    expected = resp.headers.get("Content-Length")
+                    expected_bytes = int(expected) if expected and expected.isdigit() else None
+                    with open(output_path, "wb", buffering=1024 * 1024) as output:
+                        for chunk in resp.iter_content(chunk_size=c_size):
+                            if chunk:
+                                output.write(chunk)
+                                written += len(chunk)
+                                now = time.time()
+                                if now - last_progress >= 1:
+                                    elapsed = max(now - started, 0.001)
+                                    if progress_callback:
+                                        progress_callback(
+                                            written,
+                                            expected_bytes or 0,
+                                            written / elapsed / (1024 * 1024),
+                                        )
+                                    logger.info(
+                                        "Complete-file download progress for %s: %s bytes received%s",
+                                        self._safe_url(url),
+                                        written,
+                                        f" of {expected_bytes}" if expected_bytes is not None else "",
+                                    )
+                                    last_progress = now
+
+                if expected_bytes is not None and written != expected_bytes:
+                    raise IOError(
+                        f"truncated response: received {written} of {expected_bytes} bytes"
+                    )
+                if progress_callback:
+                    elapsed = max(time.time() - started, 0.001)
+                    progress_callback(
+                        written,
+                        expected_bytes or 0,
+                        written / elapsed / (1024 * 1024),
+                    )
+                self.scaler.record_success(time.time() - started, written)
+                return written
+            except RuntimeError:
+                # Preserve useful non-retryable client errors, matching the
+                # behavior of download_segment().
+                raise
+            except Exception as exc:
+                last_exception = exc
+                self.scaler.record_failure(0)
+                logger.warning(
+                    "Complete-file download failed for %s (attempt %s/%s): %s: %s",
+                    self._safe_url(url),
+                    attempt + 1,
+                    self.max_retries,
+                    type(exc).__name__,
+                    exc,
+                )
+                if attempt < self.max_retries - 1:
+                    time.sleep(self.backoff_factor * max(1, attempt + 1))
+
+        raise RuntimeError(
+            f"Failed to download complete media file after {self.max_retries} attempts: "
+            f"{self._safe_url(url)} ({last_exception})"
+        )
+
+    def _download_file_ranges(
+        self,
+        url: str,
+        output_path: str,
+        timeout: Tuple[int, int],
+        headers: Dict[str, str],
+        chunk_size: int,
+        worker_count: int,
+        range_size: int,
+        progress_callback,
+    ) -> Optional[int]:
+        """Download a complete file using concurrent byte ranges when supported."""
+        probe_headers = dict(headers)
+        probe_headers["Range"] = "bytes=0-0"
+        probe_headers["Accept-Encoding"] = "identity"
+        try:
+            with self._session.get(url, headers=probe_headers, stream=True, timeout=timeout) as probe:
+                if probe.status_code != 206:
+                    return None
+                content_range = probe.headers.get("Content-Range", "")
+                total_text = content_range.rsplit("/", 1)[-1] if "/" in content_range else ""
+                total_size = int(total_text) if total_text.isdigit() else 0
+                if total_size <= 0:
+                    return None
+        except Exception:
+            # The normal downloader below has its own retry and error handling.
+            return None
+
+        ranges = [
+            (start, min(start + range_size - 1, total_size - 1))
+            for start in range(0, total_size, range_size)
+        ]
+        progress_lock = threading.Lock()
+        completed = 0
+        started = time.time()
+        last_report = 0.0
+
+        def download_range(byte_range):
+            start, end = byte_range
+            range_headers = dict(headers)
+            range_headers["Range"] = f"bytes={start}-{end}"
+            range_headers["Accept-Encoding"] = "identity"
+            last_error = None
+            # A range request is only an optimization. Keep its failure
+            # window short so a throttled CDN can fall back to the validated
+            # sequential downloader instead of appearing hung for minutes.
+            range_retries = min(self.max_retries, 3)
+            range_timeout = (timeout[0], min(timeout[1], 10))
+            for attempt in range(range_retries):
+                range_started = time.time()
+                try:
+                    with self._session.get(
+                        url, headers=range_headers, stream=True, timeout=range_timeout
+                    ) as response:
+                        if response.status_code in (420, 429):
+                            retry_after = response.headers.get("Retry-After", "")
+                            wait_time = self._rate_limit_wait(response, attempt + 1)
+                            if attempt < range_retries - 1:
+                                time.sleep(wait_time)
+                            continue
+                        if response.status_code != 206:
+                            raise RuntimeError(
+                                f"HTTP {response.status_code} range response for {self._safe_url(url)}"
+                            )
+                        data = b"".join(response.iter_content(chunk_size=chunk_size))
+                        expected = end - start + 1
+                        if len(data) != expected:
+                            raise IOError(
+                                f"short range: received {len(data)} of {expected} bytes"
+                            )
+                        range_elapsed = max(time.time() - range_started, 0.001)
+                        logger.info(
+                            "Completed media range %s-%s for %s in %.1fs (%.2f MB/s)",
+                            start,
+                            end,
+                            self._safe_url(url),
+                            range_elapsed,
+                            len(data) / range_elapsed / (1024 * 1024),
+                        )
+                        return start, data
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < range_retries - 1:
+                        time.sleep(self.backoff_factor * max(1, attempt + 1))
+            raise RuntimeError(
+                f"Failed byte range {start}-{end} after {range_retries} attempts: {last_error}"
+            )
+
+        try:
+            with open(output_path, "wb") as output:
+                output.truncate(total_size)
+                executor = ThreadPoolExecutor(max_workers=min(worker_count, len(ranges)))
+                futures = [executor.submit(download_range, item) for item in ranges]
+                try:
+                    pending = set(futures)
+                    while pending:
+                        done, pending = wait(
+                            pending, timeout=2.0, return_when=FIRST_COMPLETED
+                        )
+                        now = time.time()
+                        if not done:
+                            if progress_callback:
+                                elapsed = max(now - started, 0.001)
+                                progress_callback(
+                                    completed,
+                                    total_size,
+                                    completed / elapsed / (1024 * 1024),
+                                )
+                            continue
+                        for future in done:
+                            start, data = future.result()
+                            output.seek(start)
+                            output.write(data)
+                            with progress_lock:
+                                completed += len(data)
+                                now = time.time()
+                                if progress_callback and (now - last_report >= 0.5 or completed == total_size):
+                                    elapsed = max(now - started, 0.001)
+                                    progress_callback(
+                                        completed,
+                                        total_size,
+                                        completed / elapsed / (1024 * 1024),
+                                    )
+                                    last_report = now
+                except Exception:
+                    for future in futures:
+                        future.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
+                else:
+                    executor.shutdown(wait=True)
+            self.scaler.record_success(time.time() - started, total_size)
+            return total_size
+        except Exception:
+            try:
+                with open(output_path, "wb"):
+                    pass
+            except OSError:
+                pass
+            # Returning None lets download_file_stream() retry the complete
+            # file sequentially, which is safer than exposing a partial range
+            # batch to callers.
+            return None
 
     def download_segment_hedged(
         self,

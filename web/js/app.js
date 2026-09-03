@@ -337,6 +337,8 @@ function applyState(state) {
     } else if (state.config.subs_lang) {
       document.getElementById('sl').value = state.config.subs_lang;
     }
+    const forceDownload = document.getElementById('force-download');
+    if (forceDownload) forceDownload.checked = Boolean(state.config.force_download);
   }
 
   // if a download is running, start polling progress
@@ -400,6 +402,7 @@ async function saveCfg() {
     audio_quality: aqVal,
     audio_lang: audioVal,
     subs_lang: subsVal,
+    force_download: (document.getElementById('force-download') || {}).checked || false,
   });
 }
 
@@ -577,6 +580,7 @@ async function startDl() {
     audio_quality: aqVal,
     audio_lang: audioVal,
     subs_lang: subsVal,
+    force_download: (document.getElementById('force-download') || {}).checked || false,
   });
 
   if (!res.success) {
@@ -640,7 +644,13 @@ function updateProgressPanel(dl) {
   const segsEl = document.getElementById('dl-segs');
   if (dl.segs_total > 0) {
     const trackSuffix = dl.track ? ` [${dl.track}]` : '';
-    segsEl.textContent = `${dl.segs_done} / ${dl.segs_total} parts${trackSuffix}`;
+    if (dl.complete_file) {
+      const doneMb = (dl.segs_done / (1024 * 1024)).toFixed(1);
+      const totalMb = (dl.segs_total / (1024 * 1024)).toFixed(1);
+      segsEl.textContent = `${doneMb} / ${totalMb} MB${trackSuffix}`;
+    } else {
+      segsEl.textContent = `${dl.segs_done} / ${dl.segs_total} parts${trackSuffix}`;
+    }
   } else if (dl.track) {
     segsEl.textContent = dl.track;
   } else {

@@ -345,6 +345,22 @@ button:active {
   color: var(--dim);
 }
 
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.check-row input[type=checkbox] {
+  accent-color: #fff;
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
 /* ── compact checkboxes (12px-13px, razor-sharp monochrome) ── */
 .cb-custom,
 input[type="checkbox"] {

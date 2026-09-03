@@ -67,6 +67,7 @@ def _decrypt_with_ffmpeg(input_file: str, key_hex: str, output_file: str) -> boo
         "-y",
         "-decryption_key",
         key_hex,
+        "-copyts",
         "-i",
         input_file,
         "-c",

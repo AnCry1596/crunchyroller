@@ -8,6 +8,15 @@ from pywidevine.pssh import PSSH
 from .http_client import CrunchyrollHttpClient
 
 
+def _key_bytes(value) -> bytes:
+    """Convert pywidevine key/KID values to raw bytes consistently."""
+    if isinstance(value, bytes):
+        return value
+    if hasattr(value, "bytes"):
+        return value.bytes
+    return bytes.fromhex(str(value).replace("-", "").replace(" ", ""))
+
+
 def get_widevine_device() -> Optional[Device]:
     """hunt for a widevine device (.wvd or bin+pem)"""
     wvd_files = glob.glob("*.wvd")
@@ -35,20 +44,20 @@ def send_challenge(
     client: CrunchyrollHttpClient, content_id: str, video_token: str, challenge: bytes
 ) -> bytes:
     """send the cdm challenge and get back the license"""
-    import requests as _requests
-
     url = "https://www.crunchyroll.com/license/v1/license/widevine"
     headers = {
         "Content-Type": "application/octet-stream",
         "X-Cr-Content-Id": content_id,
         "X-Cr-Video-Token": video_token,
-        "Authorization": f"Bearer {client.token}",
         "Origin": "https://static.crunchyroll.com",
         "Referer": "https://static.crunchyroll.com/",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
     }
 
-    resp = _requests.post(url, headers=headers, data=challenge)
+    # Use the authenticated client rather than a raw requests call. This
+    # preserves the client bearer-token refresh/retry behavior when a long
+    # download crosses an access-token expiry boundary.
+    resp = client.do_request("POST", url, headers=headers, data=challenge)
     resp.raise_for_status()
 
     result = resp.json()
@@ -86,15 +95,15 @@ def get_license(
         keys: Dict[bytes, bytes] = {}
         for k in cdm.get_keys(session_id):
             if str(k.type).upper() in ("CONTENT", "STREAMING", "1", "KEYTYPE.CONTENT", "KEYTYPE.STREAMING"):
-                kid_bytes = k.kid.bytes if hasattr(k.kid, "bytes") else (k.kid if isinstance(k.kid, bytes) else bytes.fromhex(str(k.kid).replace("-", "")))
-                key_bytes = k.key if isinstance(k.key, bytes) else bytes.fromhex(str(k.key))
+                kid_bytes = _key_bytes(k.kid)
+                key_bytes = _key_bytes(k.key)
                 keys[kid_bytes] = key_bytes
 
         if not keys:
             # whatever, just grab all the keys
             for k in cdm.get_keys(session_id):
-                kid_bytes = k.kid.bytes if hasattr(k.kid, "bytes") else (k.kid if isinstance(k.kid, bytes) else bytes.fromhex(str(k.kid).replace("-", "")))
-                key_bytes = k.key if isinstance(k.key, bytes) else bytes.fromhex(str(k.key))
+                kid_bytes = _key_bytes(k.kid)
+                key_bytes = _key_bytes(k.key)
                 keys[kid_bytes] = key_bytes
 
         return keys
