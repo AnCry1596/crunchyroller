@@ -6,7 +6,7 @@
   <title>crunchyroller</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=2.1">
+  <link rel="stylesheet" href="/css/style.css?v=2.2">
 </head>
 <body>
 
@@ -85,7 +85,13 @@
           <hr class="div">
           <div class="ser-title-row">
             <div class="ser-title" id="ser-title"></div>
-            <div class="tree-badge" id="tree-selected-count">0 selected</div>
+            <div class="tree-header-actions">
+              <button class="btn-s" id="toggle-seasons-btn" onclick="toggleAllSeasons()">expand all</button>
+              <button class="btn-s" onclick="pickAll(true)">all</button>
+              <button class="btn-s" onclick="pickAll(false)">none</button>
+              <button class="btn-s btn-dl-top" onclick="startDl()">download</button>
+              <div class="tree-badge" id="tree-selected-count">0 selected</div>
+            </div>
           </div>
           <div id="sn-list"></div>
           <hr class="div">
@@ -127,7 +133,7 @@
   </main>
 
   <div id="toast"></div>
-  <script src="/js/particles.js?v=2.1"></script>
-  <script src="/js/app.js?v=2.1"></script>
+  <script src="/js/particles.js?v=2.2"></script>
+  <script src="/js/app.js?v=2.2"></script>
 </body>
 </html>

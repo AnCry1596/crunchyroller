@@ -795,19 +795,19 @@ def download_episode(
         first_playback_id = versions[0].guid or base_content_id
         first_episode = get_episode(
             client,
-            base_content_id,
+            first_playback_id,
             debug=debug,
             playback_id=first_playback_id,
         )
-        playback_cache[base_content_id] = first_episode
-        active_streams[base_content_id] = first_episode.token
+        playback_cache[first_playback_id] = first_episode
+        active_streams[first_playback_id] = first_episode.token
 
         subtitle_map = _locale_map(first_episode.subtitles)
         needs_more_subs = subs_all or any(loc.lower() not in subtitle_map for loc in subs_langs)
         if needs_more_subs:
             print("Fetching subtitles from versions...")
             for version in info.episode_metadata.versions:
-                if version.guid != base_content_id:
+                if version.guid and version.guid != first_playback_id:
                     print(f"Checking subtitle source: {track_title(version.audio_locale)}...")
                     v_ep = get_episode(
                         client,
@@ -877,20 +877,17 @@ def download_episode(
         # Prepare track metadata
         audio_descriptors = []
         for i, version in enumerate(versions):
-            ep = first_episode
-            content_id = base_content_id
-            if i > 0:
-                content_id = version.guid
-                ep = playback_cache.get(content_id)
-                if ep is None:
-                    ep = get_episode(
-                        client,
-                        content_id,
-                        debug=debug,
-                        playback_id=version.guid,
-                    )
-                    playback_cache[content_id] = ep
-                    active_streams[content_id] = ep.token
+            content_id = version.guid or base_content_id
+            ep = playback_cache.get(content_id)
+            if ep is None:
+                ep = get_episode(
+                    client,
+                    content_id,
+                    debug=debug,
+                    playback_id=content_id,
+                )
+                playback_cache[content_id] = ep
+                active_streams[content_id] = ep.token
 
             # Subtitle discovery can happen well before media download. Get
             # a fresh playback session immediately before using its manifest,
@@ -900,7 +897,7 @@ def download_episode(
                 client,
                 content_id,
                 debug=debug,
-                playback_id=version.guid or content_id,
+                playback_id=content_id,
             )
             previous_token = active_streams.get(content_id)
             if previous_token and previous_token != refreshed_ep.token:
@@ -920,6 +917,7 @@ def download_episode(
                     prepared["video_set"],
                     prepared["video_keys"],
                     prepared["period_duration_seconds"],
+                    content_id,
                 )
 
             print(f"Downloading {track_title(version.audio_locale)} audio...")
@@ -992,6 +990,7 @@ def download_episode(
                 video_set,
                 video_keys,
                 period_duration_seconds,
+                video_content_id,
             ) = video_download_args
             print("Downloading video...")
             try:
@@ -1015,19 +1014,19 @@ def download_episode(
                 )
                 refreshed_ep = get_episode(
                     client,
-                    base_content_id,
+                    video_content_id,
                     debug=debug,
-                    playback_id=versions[0].guid or base_content_id,
+                    playback_id=video_content_id,
                 )
-                previous_token = active_streams.get(base_content_id)
+                previous_token = active_streams.get(video_content_id)
                 if previous_token and previous_token != refreshed_ep.token:
-                    delete_stream(client, base_content_id, previous_token)
-                playback_cache[base_content_id] = refreshed_ep
-                active_streams[base_content_id] = refreshed_ep.token
+                    delete_stream(client, video_content_id, previous_token)
+                playback_cache[video_content_id] = refreshed_ep
+                active_streams[video_content_id] = refreshed_ep.token
                 prepared = _prepare_media_track(
                     client,
                     refreshed_ep,
-                    base_content_id,
+                    video_content_id,
                     audio_quality,
                     video_quality,
                     debug,
@@ -1117,7 +1116,9 @@ def download_season(
     for i, ep in enumerate(episodes):
         print(f"=== [{i+1}/{len(episodes)}] {ep.title} ===")
         episode_versions = ep.versions
-        if (len(audio_langs) > 1 or _is_all_tracks(audio_langs)) and ep.id:
+        needed_locales = {loc.strip().lower() for loc in audio_langs if loc.strip()}
+        existing_locales = {v.audio_locale.strip().lower() for v in episode_versions if getattr(v, "audio_locale", None)}
+        if ep.id and (_is_all_tracks(audio_langs) or not needed_locales.issubset(existing_locales)):
             try:
                 episode_info = get_episode_info(client, ep.id)
                 if episode_info.episode_metadata.versions:
@@ -1197,7 +1198,9 @@ def download_series(
     for i, ep in enumerate(episodes):
         print(f"=== [{i+1}/{len(episodes)}] {ep.series_title} S{ep.season_number:02d}E{ep.episode_number:02d} - {ep.title} ===")
         episode_versions = ep.versions
-        if (len(audio_langs) > 1 or _is_all_tracks(audio_langs)) and ep.id:
+        needed_locales = {loc.strip().lower() for loc in audio_langs if loc.strip()}
+        existing_locales = {v.audio_locale.strip().lower() for v in episode_versions if getattr(v, "audio_locale", None)}
+        if ep.id and (_is_all_tracks(audio_langs) or not needed_locales.issubset(existing_locales)):
             # The season endpoint may expose only the preferred audio version.
             # The episode object contains the complete dub-version list.
             try:

@@ -431,19 +431,35 @@ async function fetchUrl() {
   toast(res.title, 'ok');
 }
 
+// toggle expand/collapse all seasons
+function toggleAllSeasons() {
+  const blocks = document.querySelectorAll('.sn-block');
+  const btn = document.getElementById('toggle-seasons-btn');
+  if (!blocks.length) return;
+  const anyCollapsed = [...blocks].some(b => b.classList.contains('collapsed'));
+  blocks.forEach(b => b.classList.toggle('collapsed', !anyCollapsed));
+  if (btn) btn.textContent = anyCollapsed ? 'collapse all' : 'expand all';
+}
+
 // render season and episode checkboxes
 function renderEpisodeTree(data) {
   document.getElementById('ser-title').textContent = data.title;
+  const toggleBtn = document.getElementById('toggle-seasons-btn');
+  if (toggleBtn) toggleBtn.textContent = 'expand all';
+
   const list = document.getElementById('sn-list');
   list.innerHTML = '';
 
   data.seasons.forEach((season, sIdx) => {
     const block = document.createElement('div');
-    block.className = 'sn-block';
+    block.className = 'sn-block collapsed';
 
     // season header
     const head = document.createElement('div');
     head.className = 'sn-head';
+
+    const cbWrap = document.createElement('div');
+    cbWrap.className = 'sn-cb-wrap';
 
     const seasonCb = document.createElement('input');
     seasonCb.type = 'checkbox';
@@ -451,21 +467,37 @@ function renderEpisodeTree(data) {
     seasonCb.checked = true;
     seasonCb.id = 's' + sIdx;
 
+    cbWrap.appendChild(seasonCb);
+
+    const titleWrap = document.createElement('div');
+    titleWrap.className = 'sn-title-wrap';
+
     const label = document.createElement('span');
     label.className = 'sn-title';
-    label.textContent = 'season ' + season.season_number;
+    label.textContent = 'Season ' + season.season_number;
 
     const count = document.createElement('span');
     count.className = 'sn-count';
     count.textContent = season.episodes.length + ' ep';
 
-    head.append(seasonCb, label, count);
+    titleWrap.append(label, count);
+
+    const chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    chevron.setAttribute('class', 'sn-chevron');
+    chevron.setAttribute('width', '10');
+    chevron.setAttribute('height', '10');
+    chevron.setAttribute('viewBox', '0 0 10 10');
+    chevron.setAttribute('fill', 'none');
+    chevron.innerHTML = '<path d="M3.5 1.5L7 5L3.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>';
+
+    head.append(cbWrap, titleWrap, chevron);
 
     // episode rows
     const epList = document.createElement('div');
     epList.className = 'ep-list';
 
-    head.addEventListener('click', () => {
+    cbWrap.addEventListener('click', (e) => {
+      e.stopPropagation();
       seasonCb.checked = !seasonCb.checked;
       seasonCb.indeterminate = false;
       const isChecked = seasonCb.checked;
@@ -476,6 +508,16 @@ function renderEpisodeTree(data) {
       });
       updateSeasonState(block);
       updateTotalCount();
+    });
+
+    head.addEventListener('click', () => {
+      block.classList.toggle('collapsed');
+      const blocks = document.querySelectorAll('.sn-block');
+      const tBtn = document.getElementById('toggle-seasons-btn');
+      if (tBtn && blocks.length) {
+        const anyCollapsed = [...blocks].some(b => b.classList.contains('collapsed'));
+        tBtn.textContent = anyCollapsed ? 'expand all' : 'collapse all';
+      }
     });
 
     season.episodes.forEach(ep => {
