@@ -3,12 +3,15 @@ import threading
 import requests
 from typing import Optional
 from urllib.parse import urlparse
+from urllib3.util import Timeout as Urllib3Timeout
 from .auth import get_access_token, login_with_credentials, load_config, save_config
 from .session_pool import SessionPool, ConcurrencyConfig
 
 
 class CrunchyrollHttpClient:
     DEFAULT_REQUEST_TIMEOUT = 20
+    MAX_REQUEST_WALL_TIME = 90
+    HEARTBEAT_INTERVAL = 15
     MAX_RATE_LIMIT_RETRIES = 10
     RATE_LIMIT_INITIAL_WAIT = 30
     MAX_RATE_LIMIT_WAIT = 300
@@ -71,7 +74,19 @@ class CrunchyrollHttpClient:
 
     def do_request(self, method: str, url: str, **kwargs) -> requests.Response:
         headers = kwargs.pop("headers", {})
-        kwargs.setdefault("timeout", self.DEFAULT_REQUEST_TIMEOUT)
+        requested_timeout = kwargs.pop("timeout", self.DEFAULT_REQUEST_TIMEOUT)
+        try:
+            requested_timeout = float(requested_timeout)
+        except (TypeError, ValueError):
+            requested_timeout = float(self.DEFAULT_REQUEST_TIMEOUT)
+        # A read timeout is inactivity-based and can be reset repeatedly by a
+        # slow server. urllib3's total timeout adds a real wall-clock bound.
+        request_timeout = Urllib3Timeout(
+            connect=min(10.0, requested_timeout),
+            read=requested_timeout,
+            total=max(requested_timeout, float(self.MAX_REQUEST_WALL_TIME)),
+        )
+        kwargs["timeout"] = request_timeout
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         if "User-Agent" not in headers:
@@ -82,18 +97,18 @@ class CrunchyrollHttpClient:
         heartbeat_stop = threading.Event()
 
         def _heartbeat() -> None:
-            while not heartbeat_stop.wait(5):
+            while not heartbeat_stop.wait(self.HEARTBEAT_INTERVAL):
                 elapsed = time.monotonic() - request_started
                 print(
                     f"[http] Still waiting: {method.upper()} {request_path} "
-                    f"({elapsed:.0f}s elapsed; timeout={kwargs['timeout']}s per attempt; "
-                    "transient HTTP retries may extend the total time)...",
+                    f"({elapsed:.0f}s elapsed; wall-clock deadline="
+                    f"{self.MAX_REQUEST_WALL_TIME}s)...",
                     flush=True,
                 )
 
         print(
             f"[http] Dispatching {method.upper()} {request_path} "
-            f"(timeout={kwargs['timeout']}s)...",
+            f"(timeout={requested_timeout:g}s, wall={self.MAX_REQUEST_WALL_TIME}s)...",
             flush=True,
         )
         heartbeat = threading.Thread(target=_heartbeat, daemon=True)
