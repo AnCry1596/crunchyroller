@@ -6,7 +6,7 @@ import queue
 import socket
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Dict, Generator, List, Optional, Tuple, Union
 from urllib.parse import urlsplit
@@ -355,6 +355,7 @@ class SessionPool:
         chunk_size: Optional[int] = None,
         progress_callback=None,
         parallel_ranges: int = 8,
+        range_size: int = 8 * 1024 * 1024,
     ) -> int:
         """Stream a complete media file to disk and reject truncated responses.
 
@@ -379,6 +380,7 @@ class SessionPool:
                 req_headers,
                 c_size,
                 parallel_ranges,
+                range_size,
                 progress_callback,
             )
             if ranged_size is not None:
@@ -481,6 +483,7 @@ class SessionPool:
         headers: Dict[str, str],
         chunk_size: int,
         worker_count: int,
+        range_size: int,
         progress_callback,
     ) -> Optional[int]:
         """Download a complete file using concurrent byte ranges when supported."""
@@ -500,8 +503,8 @@ class SessionPool:
             return None
 
         ranges = [
-            (start, min(start + chunk_size - 1, total_size - 1))
-            for start in range(0, total_size, chunk_size)
+            (start, min(start + range_size - 1, total_size - 1))
+            for start in range(0, total_size, range_size)
         ]
         progress_lock = threading.Lock()
         completed = 0
@@ -513,10 +516,15 @@ class SessionPool:
             range_headers = dict(headers)
             range_headers["Range"] = f"bytes={start}-{end}"
             last_error = None
-            for attempt in range(self.max_retries):
+            # A range request is only an optimization. Keep its failure
+            # window short so a throttled CDN can fall back to the validated
+            # sequential downloader instead of appearing hung for minutes.
+            range_retries = min(self.max_retries, 3)
+            range_timeout = (timeout[0], min(timeout[1], 10))
+            for attempt in range(range_retries):
                 try:
                     with self._session.get(
-                        url, headers=range_headers, stream=True, timeout=timeout
+                        url, headers=range_headers, stream=True, timeout=range_timeout
                     ) as response:
                         if response.status_code in (420, 429):
                             retry_after = response.headers.get("Retry-After", "")
@@ -524,7 +532,8 @@ class SessionPool:
                                 wait_time = float(retry_after)
                             except (TypeError, ValueError):
                                 wait_time = self.backoff_factor ** attempt * 2.0
-                            time.sleep(max(0.5, min(wait_time, 60.0)))
+                            if attempt < range_retries - 1:
+                                time.sleep(max(0.5, min(wait_time, 10.0)))
                             continue
                         if response.status_code != 206:
                             raise RuntimeError(
@@ -539,32 +548,55 @@ class SessionPool:
                         return start, data
                 except Exception as exc:
                     last_error = exc
-                    if attempt < self.max_retries - 1:
+                    if attempt < range_retries - 1:
                         time.sleep(self.backoff_factor * max(1, attempt + 1))
             raise RuntimeError(
-                f"Failed byte range {start}-{end} after {self.max_retries} attempts: {last_error}"
+                f"Failed byte range {start}-{end} after {range_retries} attempts: {last_error}"
             )
 
         try:
             with open(output_path, "wb") as output:
                 output.truncate(total_size)
-                with ThreadPoolExecutor(max_workers=min(worker_count, len(ranges))) as executor:
-                    futures = [executor.submit(download_range, item) for item in ranges]
-                    for future in as_completed(futures):
-                        start, data = future.result()
-                        output.seek(start)
-                        output.write(data)
-                        with progress_lock:
-                            completed += len(data)
-                            now = time.time()
-                            if progress_callback and (now - last_report >= 0.5 or completed == total_size):
+                executor = ThreadPoolExecutor(max_workers=min(worker_count, len(ranges)))
+                futures = [executor.submit(download_range, item) for item in ranges]
+                try:
+                    pending = set(futures)
+                    while pending:
+                        done, pending = wait(
+                            pending, timeout=2.0, return_when=FIRST_COMPLETED
+                        )
+                        now = time.time()
+                        if not done:
+                            if progress_callback:
                                 elapsed = max(now - started, 0.001)
                                 progress_callback(
                                     completed,
                                     total_size,
                                     completed / elapsed / (1024 * 1024),
                                 )
-                                last_report = now
+                            continue
+                        for future in done:
+                            start, data = future.result()
+                            output.seek(start)
+                            output.write(data)
+                            with progress_lock:
+                                completed += len(data)
+                                now = time.time()
+                                if progress_callback and (now - last_report >= 0.5 or completed == total_size):
+                                    elapsed = max(now - started, 0.001)
+                                    progress_callback(
+                                        completed,
+                                        total_size,
+                                        completed / elapsed / (1024 * 1024),
+                                    )
+                                    last_report = now
+                except Exception:
+                    for future in futures:
+                        future.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
+                else:
+                    executor.shutdown(wait=True)
             self.scaler.record_success(time.time() - started, total_size)
             return total_size
         except Exception:
@@ -573,7 +605,10 @@ class SessionPool:
                     pass
             except OSError:
                 pass
-            raise
+            # Returning None lets download_file_stream() retry the complete
+            # file sequentially, which is safer than exposing a partial range
+            # batch to callers.
+            return None
 
     def download_segment_hedged(
         self,
