@@ -648,13 +648,17 @@ def download_episode(
         try:
             os.remove(output_filename)
         except Exception:
-        print(
-            "Warning: Exact adaptation-set KID(s) not matched in license keys, "
-            "falling back to all keys: "
-            + ", ".join(missing)
-        )
-        return keys
+            pass
+    elif os.path.exists(output_filename) and force_download:
+        print(f"Force download enabled; replacing existing file: {output_filename}")
+
     # Initialize shared SessionPool across all tracks for connection reuse
+    shared_pool = SessionPool(
+        config=concurrency_config
+        or ConcurrencyConfig(
+            pool_size=64,
+            min_workers=8,
+            max_workers=48,
             initial_workers=24,
             aimd_enabled=True,
             hedging_enabled=True,
