@@ -1,3 +1,4 @@
+import re
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
 from .http_client import CrunchyrollHttpClient
@@ -92,6 +93,22 @@ def get_pssh(manifest: ET.Element) -> Optional[str]:
     return None
 
 
+def parse_dash_duration(value: Optional[str]) -> Optional[float]:
+    """Parse an ISO-8601 DASH duration such as ``PT23M23.251S``."""
+    if not value:
+        return None
+    match = re.fullmatch(
+        r"P(?:([\d.]+)D)?(?:T(?:([\d.]+)H)?(?:([\d.]+)M)?(?:([\d.]+)S)?)?",
+        value,
+    )
+    if not match:
+        return None
+    days, hours, minutes, seconds = (
+        float(part or 0) for part in match.groups()
+    )
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
 def get_base_url(
     adaptation_set: ET.Element, is_video_set: bool, quality: str
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -152,13 +169,40 @@ def get_base_url(
 
 
 def expand_timeline(
-    adaptation_set: ET.Element, start_number: int = 1
+    adaptation_set: ET.Element,
+    start_number: int = 1,
+    period_duration_seconds: Optional[float] = None,
 ) -> List[int]:
-    """expand segment timelines into a list of numbers"""
-    s_elements = []
-    for elem in adaptation_set.iter():
-        if _clean_tag(elem.tag) == "S":
-            s_elements.append(elem)
+    """Expand a DASH SegmentTimeline into segment numbers.
+
+    DASH ``r=-1`` means repeat until the next explicit segment timestamp (or
+    until the period ends). The old implementation treated it as one segment,
+    which can omit most of a track and make audio/video durations diverge.
+    This function returns URL numbers, so media timestamps remain encoded in
+    the fMP4 fragments and are not reconstructed or discarded here.
+    """
+    segment_template = next(
+        (elem for elem in adaptation_set.iter() if _clean_tag(elem.tag) == "SegmentTemplate"),
+        None,
+    )
+    if segment_template is None:
+        return []
+
+    timeline_element = next(
+        (elem for elem in segment_template if _clean_tag(elem.tag) == "SegmentTimeline"),
+        None,
+    )
+    if timeline_element is None:
+        timeline_element = next(
+            (elem for elem in adaptation_set.iter() if _clean_tag(elem.tag) == "SegmentTimeline"),
+            None,
+        )
+    if timeline_element is None:
+        return []
+
+    s_elements = [
+        elem for elem in timeline_element if _clean_tag(elem.tag) == "S"
+    ]
 
     start_num = start_number
     for elem in adaptation_set.iter():
@@ -171,21 +215,80 @@ def expand_timeline(
                     pass
             break
 
-    result = []
+    result: List[int] = []
     seg_num = start_num
 
-    for s in s_elements:
-        repeat = 0
+    current_time: Optional[int] = None
+    try:
+        timescale = int(segment_template.attrib.get("timescale", "1"))
+    except ValueError:
+        timescale = 1
+    try:
+        presentation_time_offset = int(
+            segment_template.attrib.get("presentationTimeOffset", "0")
+        )
+    except ValueError:
+        presentation_time_offset = 0
+    end_time = (
+        presentation_time_offset + int(round(period_duration_seconds * timescale))
+        if period_duration_seconds is not None
+        else None
+    )
+    for index, s in enumerate(s_elements):
+        duration_text = s.attrib.get("d")
+        if not duration_text:
+            continue
+        try:
+            duration = int(duration_text)
+        except ValueError:
+            continue
+
+        explicit_time = s.attrib.get("t")
+        if explicit_time is not None:
+            try:
+                current_time = int(explicit_time)
+            except ValueError:
+                current_time = 0 if current_time is None else current_time
+        elif current_time is None:
+            current_time = 0
+
         r_val = s.attrib.get("r")
-        if r_val is not None:
-            repeat = int(r_val)
-            if repeat < 0:
+        try:
+            repeat = int(r_val) if r_val is not None else 0
+        except ValueError:
+            repeat = 0
+
+        if repeat < 0:
+            # A following ``t`` gives the exact end boundary. Only complete
+            # segment intervals before that boundary are repetitions; the
+            # following ``S`` is emitted separately below.
+            next_time = None
+            if index + 1 < len(s_elements):
+                next_t = s_elements[index + 1].attrib.get("t")
+                if next_t is not None:
+                    try:
+                        next_time = int(next_t)
+                    except ValueError:
+                        pass
+            has_explicit_next_time = next_time is not None
+            if next_time is None and end_time is not None:
+                next_time = end_time
+            if next_time is not None and next_time > current_time:
+                if has_explicit_next_time:
+                    segment_count = (next_time - current_time) // duration
+                else:
+                    segment_count = (next_time - current_time + duration - 1) // duration
+                repeat = max(0, segment_count - 1)
+            else:
+                # Without a period duration there is no finite boundary to
+                # infer. Preserve one segment rather than inventing URLs.
                 repeat = 0
 
         total = repeat + 1
         for _ in range(total):
             result.append(seg_num)
             seg_num += 1
+            current_time += duration
 
     return result
 

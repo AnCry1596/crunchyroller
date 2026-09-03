@@ -1,10 +1,4 @@
-"""
-crunchyroll/merger.py
-
-Multi-track Matroska (MKV) multiplexer using FFmpeg.
-Normalizes stream timestamps to prevent audio/video/subtitle desync and drift,
-applies ISO-639-2/B language codes, sets track dispositions, and writes global metadata.
-"""
+"""Multi-track Matroska (MKV) multiplexer using FFmpeg."""
 
 import logging
 import os
@@ -40,19 +34,13 @@ def merge_everything(
 ) -> None:
     """
     Muxes video, multi-audio dubs, and subtitle tracks into a single MKV container.
-    Injects timestamp normalization flags (-avoid_negative_ts make_zero -fflags +genpts -max_interleave_delta 0)
-    to prevent audio/video/subtitle drift and buffer stalls.
+    Inputs are fragmented MP4 streams whose timestamps are meaningful. Keep
+    them intact while stream-copying; regenerating PTS globally can turn a
+    small source offset into an audible/video sync error.
     """
     ffmpeg_bin = find_ffmpeg()
 
     args = [ffmpeg_bin, "-y"]
-
-    # Timestamp normalization and interleaving flags
-    args.extend([
-        "-avoid_negative_ts", "make_zero",
-        "-fflags", "+genpts",
-        "-max_interleave_delta", "0",
-    ])
 
     # Video input (stream 0)
     args.extend(["-i", video_file])
