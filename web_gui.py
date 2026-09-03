@@ -1,6 +1,7 @@
 import http.server
 import json
 import os
+import random
 import sys
 import threading
 import time
@@ -57,6 +58,7 @@ WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 initial_cfg = load_config()
 STATE = {
     "etp_rt": initial_cfg.get("etp_rt", ""),
+    "android_token": initial_cfg.get("android_access_token", ""),
     "config": {
         "video_quality": initial_cfg.get("video_quality", "1080p"),
         "audio_quality": initial_cfg.get("audio_quality", "192k"),
@@ -79,7 +81,21 @@ STATE = {
         "log":         [],
     },
 }
-LOCK = threading.Lock()
+LOCK = threading.RLock()
+
+
+def get_auth_type() -> str:
+    cfg = load_config()
+    with LOCK:
+        if STATE.get("android_token") or cfg.get("android_access_token") or cfg.get("android_refresh_token"):
+            return "android_tv"
+        if STATE.get("etp_rt") or cfg.get("etp_rt"):
+            return "token"
+    return "none"
+
+
+def is_authenticated() -> bool:
+    return get_auth_type() != "none"
 
 
 def _log(msg):
@@ -98,13 +114,15 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
             overall_pct=0.0, track_pct=0.0, complete_file=False, log=[],
         )
 
-    client = CrunchyrollHttpClient(STATE["etp_rt"])
+    client = CrunchyrollHttpClient()
     _log(f"starting {ep_total} episode(s)...")
 
     a_langs = [x.strip() for x in al.split(",") if x.strip()] or ["ja-JP"]
     s_langs = [x.strip() for x in sl.split(",") if x.strip()] or ["en-US"]
 
     for idx, item in enumerate(items):
+        if idx > 0:
+            time.sleep(random.uniform(1.5, 3.0))
         ep_id = item.get("id") if isinstance(item, dict) else item
         try:
             info = get_episode_info(client, ep_id)
@@ -193,7 +211,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", len(body))
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")
@@ -212,8 +230,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         # REST API endpoints
         if path == "/api/state":
+            auth_type = get_auth_type()
             with LOCK:
-                self._json({"authenticated": bool(STATE["etp_rt"]), "config": STATE["config"], "download": STATE["download"]})
+                self._json({
+                    "authenticated": auth_type != "none",
+                    "auth_type": auth_type,
+                    "config": STATE["config"],
+                    "download": STATE["download"],
+                })
             return
 
         # serve static files from web/ directory
@@ -296,6 +320,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 self._json({"success": False, "error": str(e)}, 401)
 
+        elif path == "/api/login-credentials":
+            username = data.get("username", "").strip()
+            password = data.get("password", "").strip()
+            if not username or not password:
+                self._json({"success": False, "error": "Username and password required"}, 400)
+                return
+            try:
+                from crunchyroll.auth import login_with_android_tv
+                acc_tok, ref_tok = login_with_android_tv(username, password)
+                with LOCK:
+                    STATE["android_token"] = acc_tok
+                    STATE["etp_rt"] = ""
+                self._json({"success": True, "message": "Logged in with Android TV credentials!"})
+            except Exception as e:
+                self._json({"success": False, "error": str(e)}, 401)
+
         elif path == "/api/config":
             with LOCK:
                 for k in ("video_quality","audio_quality","audio_lang","subs_lang","force_download"):
@@ -306,9 +346,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/fetch":
             url = data.get("url","").strip()
             if not url: self._json({"success":False,"error":"url required"},400); return
-            if not STATE["etp_rt"]: self._json({"success":False,"error":"not logged in"},401); return
+            if not is_authenticated():
+                self._json({"success":False,"error":"not logged in"},401); return
             try:
-                client = CrunchyrollHttpClient(STATE["etp_rt"])
+                client = CrunchyrollHttpClient()
                 kind, cid = parse_url_type(url)
                 al, sl = STATE["config"].get("audio_lang", "ja-JP"), STATE["config"].get("subs_lang", "en-US")
                 al_list = [x.strip() for x in al.split(",") if x.strip()]
@@ -343,7 +384,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/download":
             if STATE["download"]["status"] == "running":
                 self._json({"success":False,"error":"already downloading"},400); return
-            if not STATE["etp_rt"]:
+            if not is_authenticated():
                 self._json({"success":False,"error":"not logged in"},401); return
             items = data.get("items",[])
             if not items:
@@ -364,7 +405,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def start_gui(port=8000, use_browser=False):
     """launch crunchyroller inside a native desktop pywebview window (or default browser)"""
-    srv = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server_thread = threading.Thread(target=srv.serve_forever, daemon=True)
     server_thread.start()
 

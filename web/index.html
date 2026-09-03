@@ -6,7 +6,7 @@
   <title>crunchyroller</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=2.2">
+  <link rel="stylesheet" href="/css/style.css?v=2.5">
 </head>
 <body>
 
@@ -35,11 +35,28 @@
           </div>
         </div>
         <div class="grid2" style="margin-top:12px">
-          <button onclick="detect()">auto-detect</button>
           <button onclick="webviewLogin()">browser login</button>
+          <button id="toggle-android-login-btn" onclick="toggleAndroidLoginForm()">android tv login</button>
         </div>
+
+        <div id="android-login-panel" style="display:none;">
+          <div class="field">
+            <label>email</label>
+            <div class="row">
+              <input type="email" id="login-email" placeholder="crunchyroll email">
+            </div>
+          </div>
+          <div class="field" style="margin-top:4px;">
+            <label>password</label>
+            <div class="row">
+              <input type="password" id="login-pass" placeholder="crunchyroll password">
+              <button class="btn-s" id="btn-login-cred" onclick="loginCredentials()">sign in</button>
+            </div>
+          </div>
+        </div>
+
         <p class="hint">
-          log into <strong>crunchyroll.com</strong> first, then click auto-detect. or use browser login to sign in here.
+          use browser login to sign in via web, or click android tv login to sign in with email & password for a native TV token.
         </p>
       </div>
 
@@ -133,7 +150,7 @@
   </main>
 
   <div id="toast"></div>
-  <script src="/js/particles.js?v=2.2"></script>
-  <script src="/js/app.js?v=2.2"></script>
+  <script src="/js/particles.js?v=2.6"></script>
+  <script src="/js/app.js?v=2.6"></script>
 </body>
 </html>

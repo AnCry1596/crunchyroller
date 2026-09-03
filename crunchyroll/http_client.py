@@ -38,24 +38,57 @@ class CrunchyrollHttpClient:
         )
         self.session = self.session_pool.get_session()
 
+        # check for android tv tokens
+        cfg = load_config()
+        self.android_token = cfg.get("android_access_token", "")
+        self.android_refresh_token = cfg.get("android_refresh_token", "")
+
         # try to load etp_rt from config
         if not self.etp_rt:
-            cfg = load_config()
             if "etp_rt" in cfg and cfg["etp_rt"]:
                 self.etp_rt = cfg["etp_rt"]
 
-        # still no etp_rt? try grabbing it with creds (good luck)
-        if not self.etp_rt and self.username and self.password:
-            acc_tok, ref_tok = login_with_credentials(self.username, self.password)
-            self.etp_rt = ref_tok
-            self.token = acc_tok
-            save_config({"etp_rt": ref_tok, "username": self.username})
+        # username & password provided? log in directly via Android TV client
+        if self.username and self.password:
+            try:
+                acc_tok, ref_tok = login_with_credentials(self.username, self.password)
+                self.android_token = acc_tok
+                self.android_refresh_token = ref_tok
+                self.token = acc_tok
+                save_config({"username": self.username})
+            except Exception as e:
+                print(f"[auth] Android TV credentials login failed: {e}")
 
-        if not self.token and self.etp_rt:
-            self.refresh_token()
+        # prioritize Android TV token if available
+        if self.android_token:
+            self.token = self.android_token
+        elif self.android_refresh_token:
+            self.refresh_android_token()
+        elif self.etp_rt:
+            try:
+                self.token = get_access_token(self.etp_rt)
+            except Exception as e:
+                print(f"[auth] Failed to refresh web token from etp_rt: {e}")
 
     def refresh_token(self) -> None:
-        self.token = get_access_token(self.etp_rt)
+        if self.android_refresh_token:
+            self.refresh_android_token()
+        elif self.etp_rt:
+            try:
+                self.token = get_access_token(self.etp_rt)
+            except Exception as e:
+                print(f"[auth] Failed to refresh web token from etp_rt: {e}")
+
+    def refresh_android_token(self) -> None:
+        if self.android_refresh_token:
+            from .auth import refresh_android_tv_token
+            try:
+                new_acc, new_ref = refresh_android_tv_token(self.android_refresh_token)
+                self.android_token = new_acc
+                self.android_refresh_token = new_ref
+                self.token = new_acc
+            except Exception as e:
+                print(f"[auth] Failed to refresh Android TV token: {e}")
 
     def _rate_limit_wait(self, response: requests.Response, retry_number: int) -> int:
         """Return a flood-wait-aware delay for a 420/429 response."""
@@ -87,7 +120,7 @@ class CrunchyrollHttpClient:
             total=max(requested_timeout, float(self.MAX_REQUEST_WALL_TIME)),
         )
         kwargs["timeout"] = request_timeout
-        if self.token:
+        if "Authorization" not in headers and self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         if "User-Agent" not in headers:
             headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
@@ -134,9 +167,14 @@ class CrunchyrollHttpClient:
         )
         if response.status_code == 401:
             print("[http] Access token expired; refreshing and retrying request...", flush=True)
-            self.refresh_token()
-            if self.token:
-                headers["Authorization"] = f"Bearer {self.token}"
+            if self.android_refresh_token:
+                self.refresh_android_token()
+                if self.android_token:
+                    headers["Authorization"] = f"Bearer {self.android_token}"
+            elif self.etp_rt:
+                self.refresh_token()
+                if self.token:
+                    headers["Authorization"] = f"Bearer {self.token}"
             retry_started = time.monotonic()
             try:
                 response = self.session.request(method, url, headers=headers, **kwargs)

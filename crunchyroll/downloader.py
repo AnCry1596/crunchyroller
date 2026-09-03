@@ -3,6 +3,7 @@ import os
 import queue
 import shutil
 import subprocess
+import random
 import sys
 import tempfile
 import threading
@@ -1114,6 +1115,8 @@ def download_season(
     """download an entire season"""
     print(f"Found {len(episodes)} episodes in this season!\n")
     for i, ep in enumerate(episodes):
+        if i > 0:
+            time.sleep(random.uniform(1.5, 3.0))
         print(f"=== [{i+1}/{len(episodes)}] {ep.title} ===")
         episode_versions = ep.versions
         needed_locales = {loc.strip().lower() for loc in audio_langs if loc.strip()}
@@ -1196,6 +1199,8 @@ def download_series(
     )
 
     for i, ep in enumerate(episodes):
+        if i > 0:
+            time.sleep(random.uniform(1.5, 3.0))
         print(f"=== [{i+1}/{len(episodes)}] {ep.series_title} S{ep.season_number:02d}E{ep.episode_number:02d} - {ep.title} ===")
         episode_versions = ep.versions
         needed_locales = {loc.strip().lower() for loc in audio_langs if loc.strip()}

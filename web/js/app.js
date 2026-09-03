@@ -297,6 +297,18 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   const state = await api('/api/state');
   applyState(state);
+
+  ['login-email', 'login-pass'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          loginCredentials();
+        }
+      });
+    }
+  });
 });
 
 // sync UI with backend state
@@ -306,7 +318,13 @@ function applyState(state) {
 
   if (state.authenticated) {
     badge.classList.add('on');
-    badgeTxt.textContent = 'connected';
+    if (state.auth_type === 'android_tv') {
+      badgeTxt.textContent = 'connected (android tv)';
+    } else if (state.auth_type === 'token') {
+      badgeTxt.textContent = 'connected (token)';
+    } else {
+      badgeTxt.textContent = 'connected';
+    }
   } else {
     badge.classList.remove('on');
     badgeTxt.textContent = 'offline';
@@ -353,7 +371,7 @@ async function detect() {
   if (res.success) {
     toast('found session cookie!', 'ok');
     document.getElementById('badge').classList.add('on');
-    document.getElementById('badge-txt').textContent = 'connected';
+    document.getElementById('badge-txt').textContent = 'connected (token)';
   } else {
     toast(res.error || 'no cookie found', 'err');
   }
@@ -366,7 +384,7 @@ async function webviewLogin() {
   if (res.success) {
     toast('logged in!', 'ok');
     document.getElementById('badge').classList.add('on');
-    document.getElementById('badge-txt').textContent = 'connected';
+    document.getElementById('badge-txt').textContent = 'connected (token)';
   } else {
     toast(res.error || 'login closed', 'err');
   }
@@ -383,10 +401,65 @@ async function saveToken() {
   if (res.success) {
     toast('token saved!', 'ok');
     document.getElementById('badge').classList.add('on');
-    document.getElementById('badge-txt').textContent = 'connected';
+    document.getElementById('badge-txt').textContent = 'connected (token)';
     document.getElementById('tok').value = '';
   } else {
     toast(res.error || 'invalid token', 'err');
+  }
+}
+
+// toggle collapsible Android TV login form
+function toggleAndroidLoginForm() {
+  const panel = document.getElementById('android-login-panel');
+  const btn = document.getElementById('toggle-android-login-btn');
+  if (!panel) return;
+  const isHidden = panel.style.display === 'none' || !panel.style.display;
+  panel.style.display = isHidden ? 'flex' : 'none';
+  if (btn) btn.classList.toggle('active', isHidden);
+  if (isHidden) {
+    const emailInput = document.getElementById('login-email');
+    if (emailInput) emailInput.focus();
+  }
+}
+
+// Android TV username & password login
+async function loginCredentials() {
+  const username = (document.getElementById('login-email').value || '').trim();
+  const password = (document.getElementById('login-pass').value || '').trim();
+  if (!username || !password) {
+    toast('enter email and password', 'err');
+    return;
+  }
+  const btn = document.getElementById('btn-login-cred');
+  const origText = btn ? btn.textContent : 'sign in';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'signing in...';
+  }
+  toast('signing in to Android TV...', 'ok');
+  try {
+    const res = await api('/api/login-credentials', { username, password });
+    if (res.success) {
+      toast('Android TV token created!', 'ok');
+      document.getElementById('badge').classList.add('on');
+      document.getElementById('badge-txt').textContent = 'connected (android tv)';
+      document.getElementById('login-pass').value = '';
+      setTimeout(() => {
+        const panel = document.getElementById('android-login-panel');
+        const toggleBtn = document.getElementById('toggle-android-login-btn');
+        if (panel) panel.style.display = 'none';
+        if (toggleBtn) toggleBtn.classList.remove('active');
+      }, 1200);
+    } else {
+      toast(res.error || 'login failed', 'err');
+    }
+  } catch (e) {
+    toast('login failed: ' + e.message, 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
   }
 }
 

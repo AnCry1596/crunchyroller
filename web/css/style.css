@@ -164,6 +164,7 @@ main {
 /* text inputs */
 input[type="text"],
 input[type="password"],
+input[type="email"],
 input:not([type]) {
   width: 100%;
   height: 38px;
@@ -181,6 +182,7 @@ input:not([type]) {
 
 input[type="text"]:focus,
 input[type="password"]:focus,
+input[type="email"]:focus,
 input:not([type]):focus {
   border-color: rgba(255, 255, 255, 0.25);
   box-shadow: 0 0 12px var(--glow);
@@ -188,8 +190,26 @@ input:not([type]):focus {
 
 input[type="text"]::placeholder,
 input[type="password"]::placeholder,
+input[type="email"]::placeholder,
 input:not([type])::placeholder {
   color: #444;
+}
+
+#android-login-panel {
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: fadeIn 0.18s ease;
+}
+
+#toggle-android-login-btn.active {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* unified select styling — native select and custom dropdown button match 100% */

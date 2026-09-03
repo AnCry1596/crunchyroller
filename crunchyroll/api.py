@@ -73,61 +73,21 @@ def parse_url_type(url: str) -> Tuple[str, str]:
     raise ValueError(f"Unable to parse Crunchyroll URL: {url}")
 
 
-def get_episode(
-    client: CrunchyrollHttpClient,
-    content_id: str,
-    debug: bool = False,
-    playback_id: Optional[str] = None,
-) -> PlaybackStream:
-    """Grab a stream URL and token from the web playback endpoint."""
-    web_url = f"https://www.crunchyroll.com/playback/v3/{quote(content_id, safe='')}/web/chrome/play"
-    started_at = time.monotonic()
-    print(
-        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
-        f"Request started for content {content_id} "
-        f"(timeout={client.DEFAULT_REQUEST_TIMEOUT}s)...",
-        flush=True,
-    )
-
-    try:
-        response = client.do_request("GET", web_url)
-    except Exception as exc:
-        elapsed = time.monotonic() - started_at
-        print(
-            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
-            f"Request failed for content {content_id} "
-            f"after {elapsed:.1f}s: {type(exc).__name__}: {exc}",
-            flush=True,
-        )
-        raise
-
-    elapsed = time.monotonic() - started_at
-    print(
-        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
-        f"Response received for content {content_id}: "
-        f"HTTP {response.status_code} after {elapsed:.1f}s",
-        flush=True,
-    )
-    response.raise_for_status()
-
-    try:
-        data = response.json()
-    except Exception:
-        raise
-
-    if not isinstance(data, dict):
-        raise RuntimeError("Playback response was not a JSON object")
-
-    manifest_url = data.get("url", "")
+def _parse_playback_response(data: Dict[str, Any], debug: bool = False) -> PlaybackStream:
+    """Parse playback JSON payload into a PlaybackStream."""
+    manifest_url = str(data.get("url", "") or "").strip()
     if not manifest_url:
         hardsubs = data.get("hardsubs") or data.get("hardSubs") or {}
-        if "en-US" in hardsubs:
-            manifest_url = hardsubs["en-US"].get("url", "")
-        elif "" in hardsubs:
-            manifest_url = hardsubs[""].get("url", "")
-        elif hardsubs:
-            first_key = next(iter(hardsubs))
-            manifest_url = hardsubs[first_key].get("url", "")
+        if isinstance(hardsubs, dict):
+            if "en-US" in hardsubs and isinstance(hardsubs["en-US"], dict):
+                manifest_url = str(hardsubs["en-US"].get("url", "") or "").strip()
+            elif "" in hardsubs and isinstance(hardsubs[""], dict):
+                manifest_url = str(hardsubs[""].get("url", "") or "").strip()
+            elif hardsubs:
+                for entry in hardsubs.values():
+                    if isinstance(entry, dict) and entry.get("url"):
+                        manifest_url = str(entry.get("url", "") or "").strip()
+                        break
 
     if debug:
         print("\n--- DEBUG PLAYBACK STREAM JSON ---")
@@ -144,11 +104,12 @@ def get_episode(
                     # Crunchyroll may include placeholder entries such as
                     # "none" with no URL; they are not downloadable tracks.
                     continue
-                locale = _subtitle_locale(lang, s_info.get("language", lang))
+                resolved_lang = s_info.get("language") or lang
+                locale = _subtitle_locale(lang, resolved_lang)
                 if not locale:
                     continue
                 subtitles[locale] = Subtitle(
-                    language=s_info.get("language", locale),
+                    language=str(resolved_lang or locale),
                     url=subtitle_url,
                 )
     elif isinstance(subtitles_raw, list):
@@ -159,18 +120,114 @@ def get_episode(
             parsed_url = urlparse(subtitle_url)
             if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
                 continue
+            raw_lang = s_info.get("language")
             locale = _subtitle_locale(
-                s_info.get("locale") or s_info.get("lang") or s_info.get("language"),
-                s_info.get("language"),
+                s_info.get("locale") or s_info.get("lang") or raw_lang,
+                raw_lang,
             )
             if locale:
                 subtitles[locale] = Subtitle(
-                    language=s_info.get("language", locale),
+                    language=str(raw_lang or locale),
                     url=subtitle_url,
                 )
 
-    token = data.get("token", "")
+    token = str(data.get("token") or data.get("playbackToken") or data.get("playback_token") or "")
     return PlaybackStream(manifest_url=manifest_url, subtitles=subtitles, token=token)
+
+
+def get_episode(
+    client: CrunchyrollHttpClient,
+    content_id: str,
+    debug: bool = False,
+    playback_id: Optional[str] = None,
+) -> PlaybackStream:
+    """Grab a stream URL and token from Android TV play service with Web fallback."""
+    clean_id = str(content_id).strip()
+    quoted_content_id = quote(clean_id, safe="")
+    timeout = getattr(client, "DEFAULT_REQUEST_TIMEOUT", 20)
+    print(
+        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
+        f"Request started for content {clean_id} "
+        f"(timeout={timeout}s)...",
+        flush=True,
+    )
+
+    # 1. Prioritize official Crunchyroll Android TV play service
+    android_url = (
+        f"https://cr-play-service.prd.crunchyrollsvc.com/v3/{quoted_content_id}/tv/android_tv/play?queue=0"
+    )
+    android_headers = {
+        "User-Agent": "Crunchyroll/ANDROIDTV/3.70.0_22358 (Android 12; en-US; SHIELD Android TV Build/SR1A.220624.014)",
+    }
+    raw_android_token = getattr(client, "android_token", None)
+    if isinstance(raw_android_token, str) and raw_android_token.strip():
+        android_token = raw_android_token.strip()
+    else:
+        android_token = getattr(client, "token", None)
+
+    if android_token:
+        token_str = str(android_token).strip()
+        if token_str:
+            android_headers["Authorization"] = f"Bearer {token_str}"
+
+    started_at = time.monotonic()
+    try:
+        response = client.do_request("GET", android_url, headers=android_headers)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("Playback response was not a JSON object")
+        stream = _parse_playback_response(data, debug=debug)
+        if not stream.manifest_url:
+            raise RuntimeError("Playback response contained no manifest URL")
+        elapsed = time.monotonic() - started_at
+        print(
+            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
+            f"Response received for content {clean_id}: "
+            f"HTTP {response.status_code} after {elapsed:.1f}s",
+            flush=True,
+        )
+        return stream
+    except Exception as exc:
+        reason = " ".join(str(exc).split()) if str(exc).strip() else type(exc).__name__
+        print(
+            f"[playback] Android TV playback failed ({reason}); falling back to web endpoint...",
+            flush=True,
+        )
+
+    # 2. Fallback to web endpoint
+    web_url = f"https://www.crunchyroll.com/playback/v3/{quoted_content_id}/web/chrome/play"
+    web_started_at = time.monotonic()
+    try:
+        response = client.do_request("GET", web_url)
+    except Exception as exc:
+        elapsed = time.monotonic() - web_started_at
+        print(
+            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
+            f"Request failed for content {clean_id} "
+            f"after {elapsed:.1f}s: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        raise
+
+    elapsed = time.monotonic() - web_started_at
+    print(
+        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
+        f"Response received for content {clean_id}: "
+        f"HTTP {response.status_code} after {elapsed:.1f}s",
+        flush=True,
+    )
+    response.raise_for_status()
+
+    try:
+        data = response.json()
+    except Exception:
+        raise
+
+    if not isinstance(data, dict):
+        raise RuntimeError("Playback response was not a JSON object")
+
+    return _parse_playback_response(data, debug=debug)
 
 
 
@@ -362,12 +419,14 @@ def delete_stream(
     Cleanup is intentionally idempotent: an expired or already-removed
     playback session is considered successfully cleaned up.
     """
-    if not content_id or not video_token:
+    clean_content_id = str(content_id or "").strip()
+    clean_token = str(video_token or "").strip()
+    if not clean_content_id or not clean_token:
         return False
 
     url = (
         "https://www.crunchyroll.com/playback/v1/token/"
-        f"{quote(content_id, safe='')}/{quote(video_token, safe='')}"
+        f"{quote(clean_content_id, safe='')}/{quote(clean_token, safe='')}"
     )
     headers = {"Accept": "*/*"}
     try:

@@ -177,20 +177,110 @@ def auto_detect_etp_rt() -> Optional[str]:
 
 
 
-def login_with_credentials(username: str, password: str, device_id_val: Optional[str] = None) -> Tuple[str, str]:
-    """legacy password login is dead. just try to grab the cookie."""
-    token = auto_detect_etp_rt()
-    if token:
-        return "", token
+ANDROID_BASIC_AUTH = "Basic ZXZ4YzVybGN1bnd4cm91YWpmeHI6NkJGWGM1SUk3UWx2Z3NFbzdiVjBuWUNfN1VRLXVlSVM="
+ANDROID_CLIENT_ID = "evxc5rlcunwxrouajfxr"
+ANDROID_CLIENT_SECRET = "6BFXc5II7QlvgsEo7bV0nYC_7UQ-ueIS"
+ANDROID_USER_AGENT = "Crunchyroll/ANDROIDTV/3.70.0_22358 (Android 12; en-US; SHIELD Android TV Build/SR1A.220624.014)"
 
-    raise RuntimeError(
-        "Crunchyroll no longer supports direct password API login. "
-        "Please use your 'etp_rt' session token instead!\n"
-        "How to get etp_rt:\n"
-        "1. Log in to crunchyroll.com in your browser.\n"
-        "2. Press F12 (Developer Tools) -> Application -> Cookies -> crunchyroll.com.\n"
-        "3. Copy the value of 'etp_rt' and paste it into the Session Token field!"
-    )
+
+def login_with_android_tv(
+    username: str, password: str, device_id: Optional[str] = None
+) -> Tuple[str, str]:
+    """Authenticates using Crunchyroll's official Android TV client credentials.
+    Returns (access_token, refresh_token).
+    """
+    dev_id = device_id or str(uuid.uuid4())
+    url = "https://beta-api.crunchyroll.com/auth/v1/token"
+    headers = {
+        "User-Agent": ANDROID_USER_AGENT,
+        "Authorization": ANDROID_BASIC_AUTH,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "ETP-Anonymous-ID": dev_id,
+        "Request-Type": "SignIn",
+    }
+    data = {
+        "username": username,
+        "password": password,
+        "grant_type": "password",
+        "scope": "offline_access",
+        "client_id": ANDROID_CLIENT_ID,
+        "client_secret": ANDROID_CLIENT_SECRET,
+        "device_id": dev_id,
+        "device_name": "SHIELD Android TV",
+        "device_type": "ANDROIDTV",
+    }
+    resp = requests.post(url, headers=headers, data=data, timeout=20)
+    if resp.status_code != 200:
+        error_msg = resp.text
+        try:
+            err_json = resp.json()
+            error_msg = (
+                err_json.get("error_description")
+                or err_json.get("error")
+                or err_json.get("message")
+                or error_msg
+            )
+        except Exception:
+            pass
+        raise RuntimeError(f"Android TV login failed ({resp.status_code}): {error_msg}")
+
+    body = resp.json()
+    access_token = body.get("access_token", "")
+    refresh_token = body.get("refresh_token", "")
+    if not access_token:
+        raise RuntimeError("No access_token returned by Android TV login.")
+
+    save_config({
+        "android_access_token": access_token,
+        "android_refresh_token": refresh_token,
+        "username": username,
+    })
+    return access_token, refresh_token
+
+
+def refresh_android_tv_token(
+    refresh_token: str, device_id: Optional[str] = None
+) -> Tuple[str, str]:
+    """Refreshes an expired Android TV access token.
+    Returns (new_access_token, new_refresh_token).
+    """
+    dev_id = device_id or str(uuid.uuid4())
+    url = "https://beta-api.crunchyroll.com/auth/v1/token"
+    headers = {
+        "User-Agent": ANDROID_USER_AGENT,
+        "Authorization": ANDROID_BASIC_AUTH,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+    }
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "scope": "offline_access",
+        "client_id": ANDROID_CLIENT_ID,
+        "client_secret": ANDROID_CLIENT_SECRET,
+        "device_id": dev_id,
+        "device_type": "ANDROIDTV",
+    }
+    resp = requests.post(url, headers=headers, data=data, timeout=20)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Failed to refresh Android TV token ({resp.status_code}): {resp.text}")
+
+    body = resp.json()
+    new_access = body.get("access_token", "")
+    new_refresh = body.get("refresh_token", refresh_token)
+    save_config({
+        "android_access_token": new_access,
+        "android_refresh_token": new_refresh,
+    })
+    return new_access, new_refresh
+
+
+def login_with_credentials(
+    username: str, password: str, device_id_val: Optional[str] = None
+) -> Tuple[str, str]:
+    """Login with username & password using Android TV client to get native Android TV tokens."""
+    return login_with_android_tv(username, password, device_id=device_id_val)
 
 
 
