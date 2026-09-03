@@ -402,7 +402,7 @@ async function saveCfg() {
     audio_quality: aqVal,
     audio_lang: audioVal,
     subs_lang: subsVal,
-    force_download: document.getElementById('force-download').checked,
+    force_download: (document.getElementById('force-download') || {}).checked || false,
   });
 }
 
@@ -580,7 +580,7 @@ async function startDl() {
     audio_quality: aqVal,
     audio_lang: audioVal,
     subs_lang: subsVal,
-    force_download: document.getElementById('force-download').checked,
+    force_download: (document.getElementById('force-download') || {}).checked || false,
   });
 
   if (!res.success) {

@@ -250,11 +250,11 @@ def download_parts(
             _invoke_progress_cb(
                 progress_cb,
                 ep_title,
-                1,
-                1,
+                total_bytes,
+                total_bytes,
                 speed_str,
                 speed_mb,
-                track_type,
+                f"{track_type}-file",
             )
 
             if sys.stdout is not None:
