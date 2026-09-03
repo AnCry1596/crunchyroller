@@ -4,7 +4,8 @@ import uuid
 from typing import Dict, Any, Optional, Tuple
 import requests
 
-CONFIG_FILE = "config.json"
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_FILE = os.path.join(_PROJECT_ROOT, "config.json")
 
 # just need one device id per session
 _DEVICE_ID = str(uuid.uuid4())
@@ -286,23 +287,45 @@ def login_with_credentials(
 
 
 
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "video_quality": "1080p",
+    "audio_quality": "192k",
+    "audio_lang": "ja-JP",
+    "subs_lang": "en-US",
+    "force_download": False,
+}
+
+
 def load_config(config_path: str = CONFIG_FILE) -> Dict[str, Any]:
-    """load config if it exists"""
-    if os.path.exists(config_path):
+    """load config if it exists, or automatically create it with defaults if missing"""
+    if not os.path.exists(config_path):
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            save_config(DEFAULT_CONFIG, config_path)
+            return dict(DEFAULT_CONFIG)
         except Exception:
-            return {}
-    return {}
+            return dict(DEFAULT_CONFIG)
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return dict(DEFAULT_CONFIG)
 
 
 def save_config(config_dict: Dict[str, Any], config_path: str = CONFIG_FILE) -> None:
     """save settings"""
-    existing = load_config(config_path)
+    existing: Dict[str, Any] = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                existing = json.load(f)
+        except Exception:
+            existing = {}
     existing.update(config_dict)
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=4)
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=4)
+    except Exception as e:
+        print(f"Warning: Failed to save config to {config_path}: {e}")
 
 
 def open_webview_login() -> Optional[str]:
