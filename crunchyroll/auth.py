@@ -28,7 +28,7 @@ def get_access_token(etp_rt: str) -> str:
         "device_type": "Firefox on Linux",
     }
 
-    response = requests.post(url, headers=headers, cookies=cookies, data=data)
+    response = requests.post(url, headers=headers, cookies=cookies, data=data, timeout=20)
     if response.status_code != 200:
         raise RuntimeError(
             f"Failed to get access token (status {response.status_code}): {response.text}"

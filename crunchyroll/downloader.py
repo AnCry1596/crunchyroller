@@ -644,7 +644,13 @@ def download_episode(
 
     try:
         print("Requesting playback stream...")
-        first_episode = get_episode(client, base_content_id, debug=debug)
+        first_playback_id = versions[0].guid or base_content_id
+        first_episode = get_episode(
+            client,
+            base_content_id,
+            debug=debug,
+            playback_id=first_playback_id,
+        )
         playback_cache[base_content_id] = first_episode
         active_streams[base_content_id] = first_episode.token
 
@@ -653,7 +659,12 @@ def download_episode(
             for version in info.episode_metadata.versions:
                 if version.guid != base_content_id:
                     print(f"Checking subtitle source: {track_title(version.audio_locale)}...")
-                    v_ep = get_episode(client, version.guid, debug=debug)
+                    v_ep = get_episode(
+                        client,
+                        version.guid,
+                        debug=debug,
+                        playback_id=version.guid,
+                    )
                     playback_cache[version.guid] = v_ep
                     active_streams[version.guid] = v_ep.token
                     if subs_all:
@@ -721,7 +732,12 @@ def download_episode(
                 content_id = version.guid
                 ep = playback_cache.get(content_id)
                 if ep is None:
-                    ep = get_episode(client, content_id, debug=debug)
+                    ep = get_episode(
+                        client,
+                        content_id,
+                        debug=debug,
+                        playback_id=version.guid,
+                    )
                     playback_cache[content_id] = ep
                     active_streams[content_id] = ep.token
 
