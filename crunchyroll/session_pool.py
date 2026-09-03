@@ -158,7 +158,7 @@ class SessionPool:
     DEFAULT_HEADERS = {
         "Origin": "https://static.crunchyroll.com",
         "Referer": "https://static.crunchyroll.com/",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
     }
 
     def __init__(
@@ -355,7 +355,7 @@ class SessionPool:
         chunk_size: Optional[int] = None,
         progress_callback=None,
         parallel_ranges: int = 8,
-        range_size: int = 8 * 1024 * 1024,
+        range_size: int = 4 * 1024 * 1024,
     ) -> int:
         """Stream a complete media file to disk and reject truncated responses.
 
@@ -489,6 +489,7 @@ class SessionPool:
         """Download a complete file using concurrent byte ranges when supported."""
         probe_headers = dict(headers)
         probe_headers["Range"] = "bytes=0-0"
+        probe_headers["Accept-Encoding"] = "identity"
         try:
             with self._session.get(url, headers=probe_headers, stream=True, timeout=timeout) as probe:
                 if probe.status_code != 206:
@@ -515,6 +516,7 @@ class SessionPool:
             start, end = byte_range
             range_headers = dict(headers)
             range_headers["Range"] = f"bytes={start}-{end}"
+            range_headers["Accept-Encoding"] = "identity"
             last_error = None
             # A range request is only an optimization. Keep its failure
             # window short so a throttled CDN can fall back to the validated
@@ -522,6 +524,7 @@ class SessionPool:
             range_retries = min(self.max_retries, 3)
             range_timeout = (timeout[0], min(timeout[1], 10))
             for attempt in range(range_retries):
+                range_started = time.time()
                 try:
                     with self._session.get(
                         url, headers=range_headers, stream=True, timeout=range_timeout
@@ -545,6 +548,15 @@ class SessionPool:
                             raise IOError(
                                 f"short range: received {len(data)} of {expected} bytes"
                             )
+                        range_elapsed = max(time.time() - range_started, 0.001)
+                        logger.info(
+                            "Completed media range %s-%s for %s in %.1fs (%.2f MB/s)",
+                            start,
+                            end,
+                            self._safe_url(url),
+                            range_elapsed,
+                            len(data) / range_elapsed / (1024 * 1024),
+                        )
                         return start, data
                 except Exception as exc:
                     last_error = exc

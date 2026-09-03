@@ -32,13 +32,6 @@ _SUBTITLE_LOCALE_ALIASES = {
     "thai": "th-TH",
 }
 
-_ANDROID_PLAYBACK_BASE_URL = "https://cr-play-service.prd.crunchyrollsvc.com/v3"
-_ANDROID_PLAYBACK_USER_AGENT = (
-    "Crunchyroll/ANDROIDTV/3.70.0_22358 "
-    "(Android 12; en-US; SHIELD Android TV Build/SR1A.220624.014)"
-)
-
-
 def _subtitle_locale(raw_key: object, raw_language: object) -> str:
     """Return a stable locale key from a subtitle API record."""
     key = str(raw_key or "").strip()
@@ -86,15 +79,8 @@ def get_episode(
     debug: bool = False,
     playback_id: Optional[str] = None,
 ) -> PlaybackStream:
-    """Grab a stream URL and token, preferring Android TV playback.
-
-    Android playback is less prone to browser-endpoint rate limiting. The
-    existing web endpoint remains a compatibility fallback because some
-    accounts or content may not be accepted by the Android service.
-    """
-    android_id = playback_id or content_id
-    android_url = f"{_ANDROID_PLAYBACK_BASE_URL}/{quote(android_id, safe='')}/tv/android_tv/play?queue=0"
-    web_url = f"https://www.crunchyroll.com/playback/v3/{quote(content_id, safe='')}/web/firefox/play"
+    """Grab a stream URL and token from the web playback endpoint."""
+    web_url = f"https://www.crunchyroll.com/playback/v3/{quote(content_id, safe='')}/web/chrome/play"
     started_at = time.monotonic()
     print(
         f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
@@ -103,50 +89,17 @@ def get_episode(
         flush=True,
     )
 
-    response = None
-    used_android = False
     try:
+        response = client.do_request("GET", web_url)
+    except Exception as exc:
+        elapsed = time.monotonic() - started_at
         print(
             f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
-            f"Trying Android TV playback for {android_id}...",
+            f"Request failed for content {content_id} "
+            f"after {elapsed:.1f}s: {type(exc).__name__}: {exc}",
             flush=True,
         )
-        response = client.do_request(
-            "GET",
-            android_url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": _ANDROID_PLAYBACK_USER_AGENT,
-            },
-        )
-        if not 200 <= response.status_code < 300:
-            print(
-                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] Android TV "
-                f"playback returned HTTP {response.status_code}; trying web fallback...",
-                flush=True,
-            )
-            response = None
-        else:
-            used_android = True
-    except Exception as exc:
-        print(
-            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] Android TV "
-            f"playback failed: {type(exc).__name__}: {exc}; trying web fallback...",
-            flush=True,
-        )
-
-    if response is None:
-        try:
-            response = client.do_request("GET", web_url)
-        except Exception as exc:
-            elapsed = time.monotonic() - started_at
-            print(
-                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] "
-                f"Request failed for content {content_id} "
-                f"after {elapsed:.1f}s: {type(exc).__name__}: {exc}",
-                flush=True,
-            )
-            raise
+        raise
 
     elapsed = time.monotonic() - started_at
     print(
@@ -159,18 +112,8 @@ def get_episode(
 
     try:
         data = response.json()
-    except Exception as exc:
-        if used_android:
-            print(
-                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] Android TV "
-                f"response was not valid JSON ({type(exc).__name__}); trying web fallback...",
-                flush=True,
-            )
-            response = client.do_request("GET", web_url)
-            response.raise_for_status()
-            data = response.json()
-        else:
-            raise
+    except Exception:
+        raise
 
     if not isinstance(data, dict):
         raise RuntimeError("Playback response was not a JSON object")
@@ -185,27 +128,6 @@ def get_episode(
         elif hardsubs:
             first_key = next(iter(hardsubs))
             manifest_url = hardsubs[first_key].get("url", "")
-
-    if not manifest_url and used_android:
-        print(
-            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [playback] Android TV "
-            "response did not contain a usable manifest; trying web fallback...",
-            flush=True,
-        )
-        response = client.do_request("GET", web_url)
-        response.raise_for_status()
-        data = response.json()
-        used_android = False
-        manifest_url = data.get("url", "")
-        if not manifest_url:
-            hardsubs = data.get("hardsubs") or data.get("hardSubs") or {}
-            if "en-US" in hardsubs:
-                manifest_url = hardsubs["en-US"].get("url", "")
-            elif "" in hardsubs:
-                manifest_url = hardsubs[""].get("url", "")
-            elif hardsubs:
-                first_key = next(iter(hardsubs))
-                manifest_url = hardsubs[first_key].get("url", "")
 
     if debug:
         print("\n--- DEBUG PLAYBACK STREAM JSON ---")

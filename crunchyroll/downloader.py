@@ -126,7 +126,7 @@ def download_part(
     headers = {
         "Origin": "https://static.crunchyroll.com",
         "Referer": "https://static.crunchyroll.com/",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
     }
 
     if save_path:
@@ -198,7 +198,7 @@ def download_parts(
             headers = {
                 "Origin": "https://static.crunchyroll.com",
                 "Referer": "https://static.crunchyroll.com/",
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
             }
             chunk_size = 512 * 1024
 
@@ -242,7 +242,7 @@ def download_parts(
                 chunk_size=chunk_size,
                 progress_callback=_file_progress,
                 parallel_ranges=8,
-                range_size=8 * 1024 * 1024,
+                range_size=4 * 1024 * 1024,
             )
             elapsed = time.time() - start_time
             speed_mb = total_bytes / max(elapsed, 0.001) / (1024 * 1024)

@@ -54,7 +54,7 @@ def send_challenge(
         "Authorization": f"Bearer {client.token}",
         "Origin": "https://static.crunchyroll.com",
         "Referer": "https://static.crunchyroll.com/",
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:147.0) Gecko/20100101 Firefox/147.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
     }
 
     resp = _requests.post(url, headers=headers, data=challenge)
