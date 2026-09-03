@@ -337,7 +337,6 @@ function applyState(state) {
     } else if (state.config.subs_lang) {
       document.getElementById('sl').value = state.config.subs_lang;
     }
-
     const forceDownload = document.getElementById('force-download');
     if (forceDownload) forceDownload.checked = Boolean(state.config.force_download);
   }

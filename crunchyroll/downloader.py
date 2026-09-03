@@ -553,8 +553,7 @@ def _keys_for_adaptation_set(
     if missing:
         print(
             "Warning: Exact adaptation-set KID(s) not matched in license keys, "
-            "falling back to all keys: "
-            + ", ".join(missing)
+            f"falling back to all keys: {', '.join(missing)}"
         )
         return keys
     return selected
