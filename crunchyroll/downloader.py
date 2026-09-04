@@ -55,10 +55,10 @@ def _get_global_session_pool() -> SessionPool:
         if _GLOBAL_SESSION_POOL is None:
             _GLOBAL_SESSION_POOL = SessionPool(
                 config=ConcurrencyConfig(
-                    pool_size=64,
-                    min_workers=8,
-                    max_workers=48,
-                    initial_workers=16,
+                    pool_size=32,
+                    min_workers=6,
+                    max_workers=16,
+                    initial_workers=12,
                 )
             )
         return _GLOBAL_SESSION_POOL
@@ -178,9 +178,9 @@ def download_parts(
     own_pool = False
     if pool is None:
         cfg = concurrency_config or ConcurrencyConfig(
-            min_workers=8,
-            max_workers=48,
-            initial_workers=16,
+            min_workers=6,
+            max_workers=16,
+            initial_workers=12,
             aimd_enabled=True,
             hedging_enabled=False,
         )
@@ -441,9 +441,9 @@ def download_parts_optimized(
 ) -> str:
     """Optimized download pipeline API interface matching PROJECT.md interface contract."""
     cfg = concurrency_config or ConcurrencyConfig(
-        min_workers=8,
-        max_workers=48,
-        initial_workers=16,
+        min_workers=6,
+        max_workers=16,
+        initial_workers=12,
         aimd_enabled=True,
         hedging_enabled=False,
     )
@@ -782,12 +782,12 @@ def download_episode(
     shared_pool = SessionPool(
         config=concurrency_config
         or ConcurrencyConfig(
-            pool_size=64,
-            min_workers=8,
-            max_workers=48,
-            initial_workers=24,
+            pool_size=32,
+            min_workers=6,
+            max_workers=16,
+            initial_workers=12,
             aimd_enabled=True,
-            hedging_enabled=True,
+            hedging_enabled=False,
         )
     )
 

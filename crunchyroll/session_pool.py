@@ -23,22 +23,22 @@ logger = logging.getLogger("crunchyroll.session_pool")
 @dataclass
 class ConcurrencyConfig:
     """Configuration for concurrency, scaling, connection pool, and hedging."""
-    min_workers: int = 8
-    max_workers: int = 48
-    initial_workers: int = 16
+    min_workers: int = 6
+    max_workers: int = 16
+    initial_workers: int = 12
     aimd_enabled: bool = True
     hedging_enabled: bool = False  # disabled: hedge timeout math kills downloads on slow CDN segments
     hedge_factor: float = 2.0  # multiplier of median latency to trigger hedge
     hedge_min_delay: float = 1.5  # minimum delay in seconds before hedging
     max_retries: int = 5
-    backoff_factor: float = 1.5
-    pool_size: int = 64
-    timeout: int = 20
-    chunk_size: int = 262144  # 256 KB read buffer
+    backoff_factor: float = 0.5
+    pool_size: int = 32
+    timeout: int = 10
+    chunk_size: int = 524288  # 512 KB read buffer
 
 
 class TCPKeepAliveAdapter(HTTPAdapter):
-    """Custom HTTPAdapter configuring TCP Keep-Alive and TCP_NODELAY."""
+    """Custom HTTPAdapter configuring TCP Keep-Alive, TCP_NODELAY, and 1MB socket buffers."""
 
     def init_poolmanager(self, *args, **kwargs):
         socket_options = list(HTTPConnection.default_socket_options)
@@ -46,6 +46,12 @@ class TCPKeepAliveAdapter(HTTPAdapter):
             socket_options.append((socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1))
         if hasattr(socket, "IPPROTO_TCP") and hasattr(socket, "TCP_NODELAY"):
             socket_options.append((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1))
+        if hasattr(socket, "IPPROTO_TCP") and hasattr(socket, "TCP_KEEPIDLE"):
+            socket_options.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 15))
+        if hasattr(socket, "IPPROTO_TCP") and hasattr(socket, "TCP_KEEPINTVL"):
+            socket_options.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5))
+        if hasattr(socket, "SOL_SOCKET") and hasattr(socket, "SO_RCVBUF"):
+            socket_options.append((socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576))
         kwargs["socket_options"] = socket_options
         super().init_poolmanager(*args, **kwargs)
 
@@ -59,9 +65,9 @@ class AIMDConcurrencyScaler:
 
     def __init__(
         self,
-        min_workers: int = 8,
-        max_workers: int = 48,
-        initial_workers: int = 16,
+        min_workers: int = 6,
+        max_workers: int = 16,
+        initial_workers: int = 12,
         window_size: int = 10,
     ):
         self.min_workers = min_workers
@@ -243,7 +249,8 @@ class SessionPool:
         headers: Optional[Dict[str, str]] = None,
     ) -> bytes:
         """Download a single media segment into bytes with retries and metrics tracking."""
-        t_out = timeout or self.timeout
+        read_timeout = float(timeout) if timeout else float(self.timeout)
+        t_out = (4.0, read_timeout)
         req_headers = dict(self.DEFAULT_HEADERS)
         if headers:
             req_headers.update(headers)
@@ -294,7 +301,7 @@ class SessionPool:
                             self.max_retries,
                         )
                         if attempt < self.max_retries - 1:
-                            time.sleep(self.backoff_factor * max(1, attempt_number))
+                            time.sleep(min(1.0, self.backoff_factor * max(1, attempt_number)))
             except RuntimeError:
                 # Preserve non-retryable HTTP errors instead of retrying and
                 # replacing the useful status with a generic final exception.
@@ -313,7 +320,7 @@ class SessionPool:
                     e,
                 )
                 if attempt < self.max_retries - 1:
-                    time.sleep(self.backoff_factor * max(1, attempt_number))
+                    time.sleep(min(1.0, self.backoff_factor * max(1, attempt_number)))
 
             attempt += 1
 
@@ -333,7 +340,8 @@ class SessionPool:
         chunk_size: Optional[int] = None,
     ) -> Generator[bytes, None, None]:
         """Stream a media segment chunk by chunk."""
-        t_out = timeout or self.timeout
+        read_timeout = float(timeout) if timeout else float(self.timeout)
+        t_out = (4.0, read_timeout)
         c_size = chunk_size or self.config.chunk_size
         req_headers = dict(self.DEFAULT_HEADERS)
         if headers:
