@@ -115,9 +115,16 @@ Control and monitor downloads remotely from Discord on your phone or PC:
 
 Crunchyroller can be fully driven from the terminal:
 
+> [!TIP]
+> **Fast Downloads via Android TV Login:**  
+> For maximum download speeds (bypassing the ~1 MB/s CDN throttle) and true 192k audio quality, log in using your Crunchyroll credentials (`--email` & `--password` in the CLI or Android TV login in the GUI). This unlocks the high-speed mobile `/download` CDN stream distribution.
+
 ### Common Commands
 
 ```bash
+# Log in with credentials for fast downloads & 192k audio (recommended)
+python main.py --email "user@example.com" --password "your_password" --url "https://www.crunchyroll.com/watch/..."
+
 # Download a single episode in 1080p
 python main.py --url "https://www.crunchyroll.com/watch/..." --video-quality 1080p
 
@@ -126,6 +133,9 @@ python main.py --url "https://www.crunchyroll.com/watch/..." --audio-lang "ja-JP
 
 # Download every available audio dub and subtitle track
 python main.py --url "https://www.crunchyroll.com/watch/..." --audio-lang all --subs-lang all
+
+# Select a specific CDN server mirror (if available in manifest)
+python main.py --url "https://www.crunchyroll.com/watch/..." -x 2
 
 # Force redownload and replace an existing MKV
 python main.py --url "https://www.crunchyroll.com/watch/..." --force-download
@@ -152,12 +162,16 @@ python main.py --etp-rt "YOUR_ETP_RT_COOKIE" --url "https://www.crunchyroll.com/
 | :--- | :--- | :--- | :--- |
 | `--gui` | Flag | `False` | Launch native desktop GUI app window |
 | `--browser` | Flag | `False` | Open GUI in default web browser instead of native window |
+| `--email` | String | `""` | User email for Android TV authentication (recommended) |
+| `--password` | String | `""` | User password for Android TV authentication |
 | `--url` | String | `""` | URL of the episode, season, or series to download |
 | `--file` | String | `""` | Path to a text file containing URLs (one per line) |
 | `--audio-lang` | String | `ja-JP` | Audio language(s), comma-separated (e.g. `ja-JP,en-US`), or `all` for every available dub. First is default. |
 | `--subs-lang` | String | `en-US` | Subtitle language(s), comma-separated (e.g. `en-US,es-419`), or `all` for every available subtitle. First is default. |
 | `--video-quality` | String | `1080p` | Target video resolution (`1080p`, `720p`, `480p`, `360p`) |
 | `--audio-quality` | String | `192k` | Target audio bitrate (`192k`, `96k`) |
+| `-x`, `--server` | Integer | `1` | CDN server/mirror index from manifest (1 to N) |
+| `--workers` | Integer | `8` | Worker concurrency for downloading segments |
 | `--season` | Integer | `0` | Season number filter (used for series links; `0` downloads all) |
 | `--etp-rt` | String | `""` | Crunchyroll `etp_rt` authentication cookie value |
 | `--debug-manifest`| Flag | `False` | Log raw episode playback JSON and DASH manifest XML |

@@ -148,13 +148,14 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
     video_quality = getattr(args, "quality_video", None) or getattr(args, "video_quality", "1080p")
     audio_quality = getattr(args, "quality_audio", None) or getattr(args, "audio_quality", "192k")
 
-    workers = getattr(args, "workers", 16) or 16
-    disable_hedging = getattr(args, "disable_hedging", False)
+    workers = getattr(args, "workers", 8) or 8
+    hedging_enabled = bool(getattr(args, "enable_hedging", False) and not getattr(args, "disable_hedging", False))
+    server_index = max(0, getattr(args, "server", 1) - 1)
     concurrency_cfg = ConcurrencyConfig(
-        min_workers=min(8, workers),
-        max_workers=max(48, workers),
+        min_workers=min(4, workers),
+        max_workers=max(10, workers),
         initial_workers=workers,
-        hedging_enabled=not disable_hedging,
+        hedging_enabled=hedging_enabled,
     )
 
     if content_type == "episode":
@@ -170,6 +171,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             debug=args.debug_manifest,
             concurrency_config=concurrency_cfg,
             force_download=getattr(args, "force_download", False),
+            server_index=server_index,
         )
     elif content_type == "series":
         download_series(
@@ -183,6 +185,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             debug=args.debug_manifest,
             concurrency_config=concurrency_cfg,
             force_download=getattr(args, "force_download", False),
+            server_index=server_index,
         )
     elif content_type == "season":
         episodes = get_season_episodes(client, content_id, primary_audio, primary_subs)
@@ -196,6 +199,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             debug=args.debug_manifest,
             concurrency_config=concurrency_cfg,
             force_download=getattr(args, "force_download", False),
+            server_index=server_index,
         )
 
 
@@ -228,13 +232,25 @@ def main() -> None:
     parser.add_argument(
         "--workers",
         type=int,
-        default=16,
-        help="Worker concurrency for downloading segments (8 to 48)",
+        default=8,
+        help="Worker concurrency for downloading segments (default 8)",
+    )
+    parser.add_argument(
+        "-x",
+        "--server",
+        type=int,
+        default=1,
+        help="CDN mirror/server index parsed from manifest (1 to N, default 1)",
     )
     parser.add_argument(
         "--disable-hedging",
         action="store_true",
         help="Disable tail-latency chunk hedging",
+    )
+    parser.add_argument(
+        "--enable-hedging",
+        action="store_true",
+        help="Enable tail-latency chunk hedging (disabled by default)",
     )
     parser.add_argument(
         "--benchmark",

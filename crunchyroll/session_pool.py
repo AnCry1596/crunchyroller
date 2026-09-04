@@ -23,22 +23,22 @@ logger = logging.getLogger("crunchyroll.session_pool")
 @dataclass
 class ConcurrencyConfig:
     """Configuration for concurrency, scaling, connection pool, and hedging."""
-    min_workers: int = 6
-    max_workers: int = 16
-    initial_workers: int = 12
+    min_workers: int = 4
+    max_workers: int = 10
+    initial_workers: int = 8
     aimd_enabled: bool = True
     hedging_enabled: bool = False  # disabled: hedge timeout math kills downloads on slow CDN segments
     hedge_factor: float = 2.0  # multiplier of median latency to trigger hedge
     hedge_min_delay: float = 1.5  # minimum delay in seconds before hedging
     max_retries: int = 5
     backoff_factor: float = 0.5
-    pool_size: int = 32
-    timeout: int = 10
+    pool_size: int = 20
+    timeout: int = 12
     chunk_size: int = 524288  # 512 KB read buffer
 
 
 class TCPKeepAliveAdapter(HTTPAdapter):
-    """Custom HTTPAdapter configuring TCP Keep-Alive, TCP_NODELAY, and 1MB socket buffers."""
+    """Custom HTTPAdapter configuring TCP Keep-Alive, TCP_NODELAY, 512KB blocksize, and 1MB socket buffers."""
 
     def init_poolmanager(self, *args, **kwargs):
         socket_options = list(HTTPConnection.default_socket_options)
@@ -53,7 +53,20 @@ class TCPKeepAliveAdapter(HTTPAdapter):
         if hasattr(socket, "SOL_SOCKET") and hasattr(socket, "SO_RCVBUF"):
             socket_options.append((socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576))
         kwargs["socket_options"] = socket_options
+        kwargs["blocksize"] = 524288
         super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        socket_options = list(HTTPConnection.default_socket_options)
+        if hasattr(socket, "SO_KEEPALIVE"):
+            socket_options.append((socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1))
+        if hasattr(socket, "IPPROTO_TCP") and hasattr(socket, "TCP_NODELAY"):
+            socket_options.append((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1))
+        if hasattr(socket, "SOL_SOCKET") and hasattr(socket, "SO_RCVBUF"):
+            socket_options.append((socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576))
+        kwargs["socket_options"] = socket_options
+        kwargs["blocksize"] = 524288
+        return super().proxy_manager_for(*args, **kwargs)
 
 
 class AIMDConcurrencyScaler:
@@ -65,9 +78,9 @@ class AIMDConcurrencyScaler:
 
     def __init__(
         self,
-        min_workers: int = 6,
-        max_workers: int = 16,
-        initial_workers: int = 12,
+        min_workers: int = 4,
+        max_workers: int = 10,
+        initial_workers: int = 8,
         window_size: int = 10,
     ):
         self.min_workers = min_workers
@@ -165,6 +178,12 @@ class SessionPool:
         "Origin": "https://static.crunchyroll.com",
         "Referer": "https://static.crunchyroll.com/",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Encoding": "identity",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
     }
     RATE_LIMIT_INITIAL_WAIT = 30.0
     MAX_RATE_LIMIT_WAIT = 300.0
@@ -261,11 +280,11 @@ class SessionPool:
             start_t = time.time()
             attempt_number = attempt + 1
             try:
-                with self._session.get(url, headers=req_headers, timeout=t_out) as resp:
+                with self._session.get(url, headers=req_headers, stream=True, timeout=t_out) as resp:
                     duration = time.time() - start_t
 
                     if resp.status_code == 200:
-                        data = resp.content
+                        data = resp.raw.read(decode_content=True)
                         self.scaler.record_success(duration, len(data))
                         return data
                     if resp.status_code in (420, 429):

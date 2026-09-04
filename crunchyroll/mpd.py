@@ -109,10 +109,41 @@ def parse_dash_duration(value: Optional[str]) -> Optional[float]:
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
+def _collect_base_urls(rep: ET.Element, adaptation_set: ET.Element) -> List[str]:
+    """Collect all unique BaseURL values declared on a Representation or its parent AdaptationSet."""
+    urls: List[str] = []
+    for child in rep:
+        if _clean_tag(child.tag) == "BaseURL" and child.text and child.text.strip():
+            u = child.text.strip()
+            if u not in urls:
+                urls.append(u)
+    if not urls:
+        for child in adaptation_set:
+            if _clean_tag(child.tag) == "BaseURL" and child.text and child.text.strip():
+                u = child.text.strip()
+                if u not in urls:
+                    urls.append(u)
+    return urls
+
+
+def get_available_cdn_mirrors(adaptation_set: ET.Element) -> List[str]:
+    """Return all unique CDN BaseURL prefixes declared in an AdaptationSet."""
+    mirrors: List[str] = []
+    for elem in adaptation_set.iter():
+        if _clean_tag(elem.tag) == "BaseURL" and elem.text and elem.text.strip():
+            u = elem.text.strip()
+            if u not in mirrors:
+                mirrors.append(u)
+    return mirrors
+
+
 def get_base_url(
-    adaptation_set: ET.Element, is_video_set: bool, quality: str
+    adaptation_set: ET.Element,
+    is_video_set: bool,
+    quality: str,
+    server_index: int = 0,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """find base url and representation id for target quality"""
+    """find base url and representation id for target quality, supporting CDN mirror selection"""
     reps = [e for e in adaptation_set if _clean_tag(e.tag) == "Representation"]
 
     for rep in reps:
@@ -120,20 +151,13 @@ def get_base_url(
         height = rep.attrib.get("height")
         bandwidth = rep.attrib.get("bandwidth")
 
-        # look for baseurl
-        base_url_elem = None
-        for child in rep:
-            if _clean_tag(child.tag) == "BaseURL":
-                base_url_elem = child
-                break
-
-        if base_url_elem is None:
-            for child in adaptation_set:
-                if _clean_tag(child.tag) == "BaseURL":
-                    base_url_elem = child
-                    break
-
-        base_url = base_url_elem.text if base_url_elem is not None else None
+        candidate_urls = _collect_base_urls(rep, adaptation_set)
+        base_url = None
+        if candidate_urls:
+            selected_idx = min(max(0, server_index), len(candidate_urls) - 1)
+            base_url = candidate_urls[selected_idx]
+            if len(candidate_urls) > 1 and selected_idx > 0:
+                print(f"[CDN] Selected mirror #{selected_idx + 1} of {len(candidate_urls)} for {quality}")
 
         if is_video_set:
             target_height = quality.replace("p", "")
@@ -157,13 +181,8 @@ def get_base_url(
 
     first_rep = reps[0]
     first_id = first_rep.attrib.get("id", "")
-    base_url_elem = None
-    for child in first_rep:
-        if _clean_tag(child.tag) == "BaseURL":
-            base_url_elem = child
-            break
-
-    base_url = base_url_elem.text if base_url_elem is not None else None
+    candidate_urls = _collect_base_urls(first_rep, adaptation_set)
+    base_url = candidate_urls[min(max(0, server_index), len(candidate_urls) - 1)] if candidate_urls else None
     print(f"Audio quality {quality} not found, deferring to {first_id}")
     return base_url, first_id
 

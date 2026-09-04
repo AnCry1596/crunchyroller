@@ -1,7 +1,7 @@
 import json
 import time
 from typing import List, Optional, Tuple, Dict, Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlunparse, urlencode, parse_qs
 
 from .http_client import CrunchyrollHttpClient
 from .types import (
@@ -140,6 +140,7 @@ def get_episode(
     content_id: str,
     debug: bool = False,
     playback_id: Optional[str] = None,
+    queue: int = 0,
 ) -> PlaybackStream:
     """Grab a stream URL and token from Android TV play service with Web fallback."""
     clean_id = str(content_id).strip()
@@ -154,7 +155,7 @@ def get_episode(
 
     # 1. Prioritize official Crunchyroll Android TV play service
     android_url = (
-        f"https://cr-play-service.prd.crunchyrollsvc.com/v3/{quoted_content_id}/tv/android_tv/play?queue=0"
+        f"https://cr-play-service.prd.crunchyrollsvc.com/v3/{quoted_content_id}/tv/android_tv/play?queue={queue}"
     )
     android_headers = {
         "User-Agent": "Crunchyroll/ANDROIDTV/3.70.0_22358 (Android 12; en-US; SHIELD Android TV Build/SR1A.220624.014)",
@@ -228,6 +229,134 @@ def get_episode(
         raise RuntimeError("Playback response was not a JSON object")
 
     return _parse_playback_response(data, debug=debug)
+
+
+def _convert_download_to_playback(download_url: str, play_url: str) -> str:
+    """Normalize mobile download manifest URL into standard playback format.
+
+    The /download endpoint returns a manifest URL whose path contains
+    '/manifest/download/' with a 'downloadGuid' query param.
+    We patch it to look like a standard /play manifest URL so that the
+    existing DASH/Widevine pipeline works unchanged:
+
+      /manifest/download/ → /manifest/
+      downloadGuid=...    → playbackGuid=<token from /play response>
+    """
+    try:
+        parsed = urlparse(download_url)
+        play_parsed = urlparse(play_url)
+
+        new_path = parsed.path.replace("/manifest/download/", "/manifest/")
+
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        play_qs = parse_qs(play_parsed.query, keep_blank_values=True)
+
+        playback_guid = play_qs.get("playbackGuid", [None])[0]
+        if playback_guid:
+            qs.pop("downloadGuid", None)
+            qs["playbackGuid"] = [playback_guid]
+        elif "downloadGuid" in qs:
+            qs["playbackGuid"] = [qs.pop("downloadGuid")[0]]
+
+        new_query = urlencode(qs, doseq=True)
+        return urlunparse((
+            parsed.scheme, parsed.netloc, new_path,
+            parsed.params, new_query, parsed.fragment
+        ))
+    except Exception:
+        return download_url
+
+
+def get_episode_download(
+    client: CrunchyrollHttpClient,
+    content_id: str,
+    play_stream: "PlaybackStream",
+    debug: bool = False,
+    client_type: str = "android/phone",
+) -> "PlaybackStream":
+    """Fetch the mobile /download endpoint for high-speed CDN routing.
+
+    Unlike the standard /play endpoint which is subject to a ~1 MB/s CDN
+    token-bucket rate limit, the mobile /download path serves segments from a
+    dedicated distribution profile not subject to the same throttling.
+
+    Supported client_type values:
+      - "android/phone"   — Android phone client (default)
+      - "android/tablet"  — Android tablet client
+      - "tv/android_tv"   — Android TV (standard play stream)
+
+    If the /download request fails (HTTP error or no manifest URL),
+    returns the original play_stream unchanged so the caller can proceed
+    with the standard manifest.
+    """
+    clean_id = str(content_id).strip()
+    quoted_content_id = quote(clean_id, safe="")
+
+    download_url = (
+        f"https://cr-play-service.prd.crunchyrollsvc.com/v3/{quoted_content_id}/{client_type}/download"
+    )
+
+    android_headers: Dict[str, str] = {}
+
+    # Use Android mobile client User-Agent for phone/tablet client paths
+    if "phone" in client_type or "tablet" in client_type:
+        android_headers["User-Agent"] = (
+            "Crunchyroll/3.46.2 (com.crunchyroll.crunchyroid; build:7; Android 12; API 31; "
+            "HUAWEI LDN-L29 Build/HONORLDN-L29) okhttp/4.12.0"
+        )
+    else:
+        android_headers["User-Agent"] = (
+            "Crunchyroll/ANDROIDTV/3.70.0_22358 (Android 12; en-US; SHIELD Android TV Build/SR1A.220624.014)"
+        )
+
+    # Authenticate with android token if available, else fall back to web token
+    raw_android_token = getattr(client, "android_token", None)
+    if isinstance(raw_android_token, str) and raw_android_token.strip():
+        android_headers["Authorization"] = f"Bearer {raw_android_token.strip()}"
+    else:
+        web_token = getattr(client, "token", None)
+        if web_token:
+            android_headers["Authorization"] = f"Bearer {str(web_token).strip()}"
+
+    print(
+        f"[playback] Requesting /download endpoint for {clean_id} via {client_type}...",
+        flush=True,
+    )
+
+    try:
+        response = client.do_request("GET", download_url, headers=android_headers)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("Download response was not a JSON object")
+
+        dl_stream = _parse_playback_response(data, debug=debug)
+        if not dl_stream.manifest_url:
+            raise RuntimeError("Download response contained no manifest URL")
+
+        # Patch the manifest URL: /download/ → /play/ path, swap downloadGuid → playbackGuid
+        patched_url = _convert_download_to_playback(dl_stream.manifest_url, play_stream.manifest_url)
+        print(
+            f"[playback] /download succeeded; patched manifest URL obtained. "
+            f"(token borrowed from /play session)",
+            flush=True,
+        )
+
+        # Return a new PlaybackStream using the patched manifest URL,
+        # but keep the /play session token for proper stream lifecycle management
+        return PlaybackStream(
+            manifest_url=patched_url,
+            subtitles=dl_stream.subtitles or play_stream.subtitles,
+            token=play_stream.token,  # CRITICAL: reuse /play token, not /download token
+        )
+
+    except Exception as exc:
+        print(
+            f"[playback] /download endpoint failed ({exc}); "
+            f"falling back to standard /play manifest.",
+            flush=True,
+        )
+        return play_stream
 
 
 

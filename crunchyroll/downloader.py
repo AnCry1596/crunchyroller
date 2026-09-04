@@ -15,7 +15,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import requests
 
-from .api import delete_stream, get_episode, get_episode_info, get_season_episodes, get_series
+from .api import delete_stream, get_episode, get_episode_download, get_episode_info, get_season_episodes, get_series
 from .decryptor import decrypt_mp4, decrypt_stream
 from .drm import get_license
 from .http_client import CrunchyrollHttpClient
@@ -23,6 +23,7 @@ from .integrity import StreamValidator, atomic_finalize
 from .merger import find_ffmpeg, merge_everything
 from .mpd import (
     expand_timeline,
+    get_available_cdn_mirrors,
     get_base_url,
     get_kids,
     get_pssh,
@@ -55,10 +56,10 @@ def _get_global_session_pool() -> SessionPool:
         if _GLOBAL_SESSION_POOL is None:
             _GLOBAL_SESSION_POOL = SessionPool(
                 config=ConcurrencyConfig(
-                    pool_size=32,
-                    min_workers=6,
-                    max_workers=16,
-                    initial_workers=12,
+                    pool_size=20,
+                    min_workers=4,
+                    max_workers=10,
+                    initial_workers=8,
                 )
             )
         return _GLOBAL_SESSION_POOL
@@ -178,9 +179,9 @@ def download_parts(
     own_pool = False
     if pool is None:
         cfg = concurrency_config or ConcurrencyConfig(
-            min_workers=6,
-            max_workers=16,
-            initial_workers=12,
+            min_workers=4,
+            max_workers=10,
+            initial_workers=8,
             aimd_enabled=True,
             hedging_enabled=False,
         )
@@ -314,6 +315,9 @@ def download_parts(
         def _worker_loop():
             nonlocal completed_count, downloaded_bytes, active_requests
             while not job_queue.empty() and not worker_error:
+                with progress_lock:
+                    if active_requests >= pool.get_recommended_workers() and active_requests > pool.config.min_workers:
+                        break
                 try:
                     idx, url = job_queue.get_nowait()
                 except queue.Empty:
@@ -331,6 +335,7 @@ def download_parts(
                         downloaded_bytes += len(seg_data)
                         cur_completed = completed_count
                         cur_bytes = downloaded_bytes
+                        cur_active = active_requests
 
                     elapsed = time.time() - start_time
                     speed_mb = (cur_bytes / elapsed / (1024 * 1024)) if elapsed > 0 else 0.0
@@ -341,7 +346,7 @@ def download_parts(
                         try:
                             sys.stdout.write(
                                 f"\rDownloaded {cur_completed} of {total} segments ({percent}%) "
-                                f"[{speed_str}; {active_requests} active]"
+                                f"[{speed_str}; {cur_active} active]"
                             )
                             sys.stdout.flush()
                         except Exception:
@@ -441,9 +446,9 @@ def download_parts_optimized(
 ) -> str:
     """Optimized download pipeline API interface matching PROJECT.md interface contract."""
     cfg = concurrency_config or ConcurrencyConfig(
-        min_workers=6,
-        max_workers=16,
-        initial_workers=12,
+        min_workers=4,
+        max_workers=10,
+        initial_workers=8,
         aimd_enabled=True,
         hedging_enabled=False,
     )
@@ -627,6 +632,7 @@ def _prepare_media_track(
     audio_quality: str,
     video_quality: str,
     debug: bool,
+    server_index: int = 0,
 ) -> Dict[str, object]:
     """Fetch a current MPD and license keys and resolve its media sets."""
     manifest = parse_manifest(client, ep.manifest_url, debug=debug)
@@ -666,10 +672,15 @@ def _prepare_media_track(
     if video_set is None and adaptation_sets:
         video_set = adaptation_sets[0]
 
-    audio_base_url, audio_rep_id = get_base_url(audio_set, False, audio_quality)
+    if video_set is not None:
+        video_mirrors = get_available_cdn_mirrors(video_set)
+        if len(video_mirrors) > 1:
+            print(f"[CDN] {len(video_mirrors)} mirrors detected in manifest for video track (active: #{server_index + 1})")
+
+    audio_base_url, audio_rep_id = get_base_url(audio_set, False, audio_quality, server_index=server_index)
     if not audio_base_url or not audio_rep_id:
         raise RuntimeError("failed to get the audio base URL")
-    video_base_url, video_rep_id = get_base_url(video_set, True, video_quality)
+    video_base_url, video_rep_id = get_base_url(video_set, True, video_quality, server_index=server_index)
     if not video_base_url or not video_rep_id:
         raise RuntimeError("failed to get the video base URL")
 
@@ -698,6 +709,7 @@ def download_episode(
     progress_cb: Optional[Callable] = None,
     concurrency_config: Optional[ConcurrencyConfig] = None,
     force_download: bool = False,
+    server_index: int = 0,
 ) -> str:
     """download all streams for an episode and mux to mkv using shared session pooling"""
     audio_all = _is_all_tracks(audio_langs)
@@ -782,10 +794,10 @@ def download_episode(
     shared_pool = SessionPool(
         config=concurrency_config
         or ConcurrencyConfig(
-            pool_size=32,
-            min_workers=6,
-            max_workers=16,
-            initial_workers=12,
+            pool_size=20,
+            min_workers=4,
+            max_workers=10,
+            initial_workers=8,
             aimd_enabled=True,
             hedging_enabled=False,
         )
@@ -799,6 +811,17 @@ def download_episode(
             first_playback_id,
             debug=debug,
             playback_id=first_playback_id,
+            queue=0,
+        )
+        # Upgrade to mobile /download endpoint: uses android/phone CDN path
+        # which bypasses the ~1 MB/s token-bucket throttle on the standard /play CDN.
+        # Falls back to the standard /play manifest silently if the endpoint rejects us.
+        first_episode = get_episode_download(
+            client,
+            first_playback_id,
+            play_stream=first_episode,
+            debug=debug,
+            client_type="android/phone",
         )
         playback_cache[first_playback_id] = first_episode
         active_streams[first_playback_id] = first_episode.token
@@ -815,6 +838,7 @@ def download_episode(
                         version.guid,
                         debug=debug,
                         playback_id=version.guid,
+                        queue=1,
                     )
                     playback_cache[version.guid] = v_ep
                     active_streams[version.guid] = v_ep.token
@@ -879,6 +903,7 @@ def download_episode(
         audio_descriptors = []
         for i, version in enumerate(versions):
             content_id = version.guid or base_content_id
+            stream_queue = 1 if i > 0 else 0
             ep = playback_cache.get(content_id)
             if ep is None:
                 ep = get_episode(
@@ -886,29 +911,30 @@ def download_episode(
                     content_id,
                     debug=debug,
                     playback_id=content_id,
+                    queue=stream_queue,
+                )
+                ep = get_episode_download(
+                    client,
+                    content_id,
+                    play_stream=ep,
+                    debug=debug,
+                    client_type="android/phone",
                 )
                 playback_cache[content_id] = ep
                 active_streams[content_id] = ep.token
-
-            # Subtitle discovery can happen well before media download. Get
-            # a fresh playback session immediately before using its manifest,
-            # license, and signed media URLs so an aged stream token does not
-            # expire halfway through a long multi-track episode.
-            refreshed_ep = get_episode(
-                client,
-                content_id,
-                debug=debug,
-                playback_id=content_id,
-            )
-            previous_token = active_streams.get(content_id)
-            if previous_token and previous_token != refreshed_ep.token:
-                delete_stream(client, content_id, previous_token)
-            ep = refreshed_ep
-            playback_cache[content_id] = ep
-            active_streams[content_id] = ep.token
+            elif i > 0:
+                # Upgrading cached dub track from subtitle discovery if not yet upgraded
+                ep = get_episode_download(
+                    client,
+                    content_id,
+                    play_stream=ep,
+                    debug=debug,
+                    client_type="android/phone",
+                )
+                playback_cache[content_id] = ep
 
             prepared = _prepare_media_track(
-                client, ep, content_id, audio_quality, video_quality, debug
+                client, ep, content_id, audio_quality, video_quality, debug, server_index=server_index
             )
 
             if i == 0:
@@ -947,6 +973,14 @@ def download_episode(
                     content_id,
                     debug=debug,
                     playback_id=version.guid or content_id,
+                    queue=stream_queue,
+                )
+                refreshed_ep = get_episode_download(
+                    client,
+                    content_id,
+                    play_stream=refreshed_ep,
+                    debug=debug,
+                    client_type="android/phone",
                 )
                 previous_token = active_streams.get(content_id)
                 if previous_token and previous_token != refreshed_ep.token:
@@ -955,7 +989,7 @@ def download_episode(
                 playback_cache[content_id] = ep
                 active_streams[content_id] = ep.token
                 prepared = _prepare_media_track(
-                    client, ep, content_id, audio_quality, video_quality, debug
+                    client, ep, content_id, audio_quality, video_quality, debug, server_index=server_index
                 )
                 audio_file = download_parts(
                     prepared["audio_base_url"],
@@ -1019,6 +1053,13 @@ def download_episode(
                     debug=debug,
                     playback_id=video_content_id,
                 )
+                refreshed_ep = get_episode_download(
+                    client,
+                    video_content_id,
+                    play_stream=refreshed_ep,
+                    debug=debug,
+                    client_type="android/phone",
+                )
                 previous_token = active_streams.get(video_content_id)
                 if previous_token and previous_token != refreshed_ep.token:
                     delete_stream(client, video_content_id, previous_token)
@@ -1031,6 +1072,7 @@ def download_episode(
                     audio_quality,
                     video_quality,
                     debug,
+                    server_index=server_index,
                 )
                 video_file = download_parts(
                     prepared["video_base_url"],
@@ -1111,6 +1153,7 @@ def download_season(
     progress_cb: Optional[Callable] = None,
     concurrency_config: Optional[ConcurrencyConfig] = None,
     force_download: bool = False,
+    server_index: int = 0,
 ) -> None:
     """download an entire season"""
     print(f"Found {len(episodes)} episodes in this season!\n")
@@ -1152,6 +1195,7 @@ def download_season(
             progress_cb=progress_cb,
             concurrency_config=concurrency_config,
             force_download=force_download,
+            server_index=server_index,
         )
         print()
 
@@ -1168,6 +1212,7 @@ def download_series(
     debug: bool = False,
     concurrency_config: Optional[ConcurrencyConfig] = None,
     force_download: bool = False,
+    server_index: int = 0,
 ) -> None:
     """grab everything for a series"""
     # Catalog endpoints require concrete locales. Sending ``all`` here makes
@@ -1239,5 +1284,6 @@ def download_series(
             progress_cb=progress_cb,
             concurrency_config=concurrency_config,
             force_download=force_download,
+            server_index=server_index,
         )
         print()
