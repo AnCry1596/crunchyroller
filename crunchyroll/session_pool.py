@@ -20,6 +20,40 @@ from urllib3.util.retry import Retry
 logger = logging.getLogger("crunchyroll.session_pool")
 
 
+class RateLimitGate:
+    """Global coordination gate across all threads and clients for rate-limit cooldowns."""
+    _lock = threading.Lock()
+    _blocked_until: float = 0.0
+
+    @classmethod
+    def trip(cls, duration: float) -> None:
+        """Trip the gate to block all requests for `duration` seconds."""
+        with cls._lock:
+            target = time.monotonic() + max(0.0, float(duration))
+            if target > cls._blocked_until:
+                cls._blocked_until = target
+
+    @classmethod
+    def wait_if_blocked(cls) -> None:
+        """Wait until any active rate-limit cooldown expires."""
+        while True:
+            with cls._lock:
+                now = time.monotonic()
+                delay = cls._blocked_until - now
+            if delay <= 0.0:
+                break
+            print(
+                f"[rate-limit] Waiting {delay:.1f}s for global cooldown to clear...",
+                flush=True,
+            )
+            time.sleep(min(delay, 2.0))
+
+    @classmethod
+    def is_blocked(cls) -> bool:
+        with cls._lock:
+            return time.monotonic() < cls._blocked_until
+
+
 @dataclass
 class ConcurrencyConfig:
     """Configuration for concurrency, scaling, connection pool, and hedging."""
@@ -144,8 +178,11 @@ class AIMDConcurrencyScaler:
         with self._lock:
             self._total_failures += 1
             self._window_errors += 1
-            # Multiplicative Decrease immediately on error / rate-limiting
-            self._current_workers = max(self.min_workers, int(self._current_workers * 0.75))
+            # Back off to minimum workers immediately on 420/429 rate limit
+            if status_code in (420, 429):
+                self._current_workers = self.min_workers
+            else:
+                self._current_workers = max(self.min_workers, int(self._current_workers * 0.75))
             return self._current_workers
 
     def get_median_latency(self) -> float:
@@ -226,6 +263,9 @@ class SessionPool:
         self._session = requests.Session()
         retry_strategy = Retry(
             total=self.max_retries,
+            read=False,
+            connect=self.max_retries,
+            status=self.max_retries,
             backoff_factor=self.backoff_factor,
             # HTTP 420 and 429 are handled explicitly by the callers, which
             # report the cooldown and can honor Retry-After. Retrying them
@@ -268,6 +308,7 @@ class SessionPool:
         headers: Optional[Dict[str, str]] = None,
     ) -> bytes:
         """Download a single media segment into bytes with retries and metrics tracking."""
+        RateLimitGate.wait_if_blocked()
         read_timeout = float(timeout) if timeout else float(self.timeout)
         t_out = (4.0, read_timeout)
         req_headers = dict(self.DEFAULT_HEADERS)
@@ -277,6 +318,7 @@ class SessionPool:
         attempt = 0
         last_exception: Optional[Exception] = None
         while attempt < self.max_retries:
+            RateLimitGate.wait_if_blocked()
             start_t = time.time()
             attempt_number = attempt + 1
             try:
@@ -294,6 +336,7 @@ class SessionPool:
                         )
                         retry_after = resp.headers.get("Retry-After", "")
                         wait_time = self._rate_limit_wait(resp, attempt_number)
+                        RateLimitGate.trip(wait_time)
                         logger.warning(
                             "Rate limited downloading %s (HTTP %s, attempt %s/%s); "
                             "waiting %.1fs",
@@ -423,6 +466,7 @@ class SessionPool:
 
         last_exception: Optional[Exception] = None
         for attempt in range(self.max_retries):
+            RateLimitGate.wait_if_blocked()
             started = time.time()
             last_progress = started
             written = 0
@@ -435,6 +479,7 @@ class SessionPool:
                         self.scaler.record_failure(resp.status_code)
                         retry_after = resp.headers.get("Retry-After", "")
                         wait_time = self._rate_limit_wait(resp, attempt + 1)
+                        RateLimitGate.trip(wait_time)
                         if attempt < self.max_retries - 1:
                             time.sleep(wait_time)
                             continue
@@ -555,6 +600,7 @@ class SessionPool:
             range_retries = min(self.max_retries, 3)
             range_timeout = (timeout[0], min(timeout[1], 10))
             for attempt in range(range_retries):
+                RateLimitGate.wait_if_blocked()
                 range_started = time.time()
                 try:
                     with self._session.get(
@@ -563,6 +609,7 @@ class SessionPool:
                         if response.status_code in (420, 429):
                             retry_after = response.headers.get("Retry-After", "")
                             wait_time = self._rate_limit_wait(response, attempt + 1)
+                            RateLimitGate.trip(wait_time)
                             if attempt < range_retries - 1:
                                 time.sleep(wait_time)
                             continue

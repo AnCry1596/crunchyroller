@@ -368,13 +368,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     avail_audios = [v.audio_locale for v in info.episode_metadata.versions if v.audio_locale]
                 else:
                     s = get_series(client, cid, api_audio, api_subs)
-                    title = s.get("title","")
+                    title = s.get("title", "")
                     seasons = []
-                    for sn in s.get("seasons",[]):
-                        eps = get_season_episodes(client, sn.id, api_audio, api_subs)
-                        seasons.append({"season_number":sn.season_number,
-                            "episodes":[{"id":e.id,"title":e.title,"episode_number":e.episode_number,
-                                         "season_number":e.season_number,"series_title":e.series_title} for e in eps]})
+                    eps_by_season = {}
+                    for e in s.get("episodes", []):
+                        eps_by_season.setdefault(e.season_number, []).append(e)
+
+                    for sn in s.get("seasons", []):
+                        eps = eps_by_season.get(sn.season_number, [])
+                        seasons.append({
+                            "season_number": sn.season_number,
+                            "episodes": [
+                                {
+                                    "id": e.id,
+                                    "title": e.title,
+                                    "episode_number": e.episode_number,
+                                    "season_number": e.season_number,
+                                    "series_title": e.series_title,
+                                }
+                                for e in eps
+                            ],
+                        })
                         if getattr(sn, "audio_locale", None) and sn.audio_locale not in avail_audios:
                             avail_audios.append(sn.audio_locale)
                 self._json({"success":True,"title":title,"seasons":seasons,"avail_audios":avail_audios})

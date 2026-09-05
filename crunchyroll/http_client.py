@@ -3,15 +3,14 @@ import threading
 import requests
 from typing import Optional
 from urllib.parse import urlparse
-from urllib3.util import Timeout as Urllib3Timeout
 from .auth import get_access_token, login_with_credentials, load_config, save_config
-from .session_pool import SessionPool, ConcurrencyConfig
+from .session_pool import SessionPool, ConcurrencyConfig, RateLimitGate
 
 
 class CrunchyrollHttpClient:
     DEFAULT_REQUEST_TIMEOUT = 20
-    MAX_REQUEST_WALL_TIME = 90
-    HEARTBEAT_INTERVAL = 15
+    MAX_REQUEST_WALL_TIME = 45
+    HEARTBEAT_INTERVAL = 10
     MAX_RATE_LIMIT_RETRIES = 10
     RATE_LIMIT_INITIAL_WAIT = 30
     MAX_RATE_LIMIT_WAIT = 300
@@ -106,20 +105,17 @@ class CrunchyrollHttpClient:
         return min(scheduled_wait, self.MAX_RATE_LIMIT_WAIT)
 
     def do_request(self, method: str, url: str, **kwargs) -> requests.Response:
+        RateLimitGate.wait_if_blocked()
         headers = kwargs.pop("headers", {})
         requested_timeout = kwargs.pop("timeout", self.DEFAULT_REQUEST_TIMEOUT)
         try:
             requested_timeout = float(requested_timeout)
         except (TypeError, ValueError):
             requested_timeout = float(self.DEFAULT_REQUEST_TIMEOUT)
-        # A read timeout is inactivity-based and can be reset repeatedly by a
-        # slow server. urllib3's total timeout adds a real wall-clock bound.
-        request_timeout = Urllib3Timeout(
-            connect=min(10.0, requested_timeout),
-            read=requested_timeout,
-            total=max(requested_timeout, float(self.MAX_REQUEST_WALL_TIME)),
-        )
-        kwargs["timeout"] = request_timeout
+
+        # Enforce connect timeout (max 5s) and read timeout.
+        # Concrete tuple timeouts are enforced directly on socket recv by requests.
+        kwargs["timeout"] = (min(5.0, requested_timeout), requested_timeout)
         if "Authorization" not in headers and self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         if "User-Agent" not in headers:
@@ -197,6 +193,7 @@ class CrunchyrollHttpClient:
             retries += 1
             status_code = response.status_code
             wait_time = self._rate_limit_wait(response, retries)
+            RateLimitGate.trip(wait_time)
             retry_after = response.headers.get("Retry-After", "")
             header_note = f" Retry-After={retry_after}s." if retry_after else ""
             print(
@@ -206,6 +203,7 @@ class CrunchyrollHttpClient:
                 flush=True,
             )
             time.sleep(wait_time)
+            RateLimitGate.wait_if_blocked()
             retry_started = time.monotonic()
             response = self.session.request(method, url, headers=headers, **kwargs)
             print(

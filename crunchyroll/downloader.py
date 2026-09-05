@@ -794,10 +794,10 @@ def download_episode(
     shared_pool = SessionPool(
         config=concurrency_config
         or ConcurrencyConfig(
-            pool_size=20,
-            min_workers=4,
-            max_workers=10,
-            initial_workers=8,
+            pool_size=16,
+            min_workers=2,
+            max_workers=6,
+            initial_workers=4,
             aimd_enabled=True,
             hedging_enabled=False,
         )
@@ -827,26 +827,53 @@ def download_episode(
         active_streams[first_playback_id] = first_episode.token
 
         subtitle_map = _locale_map(first_episode.subtitles)
-        needs_more_subs = subs_all or any(loc.lower() not in subtitle_map for loc in subs_langs)
+        primary_locale = (getattr(versions[0], "audio_locale", "") or "").lower()
+        has_primary_subs = (primary_locale == "ja-jp" and len(first_episode.subtitles) > 0)
+        if subs_all:
+            needs_more_subs = not has_primary_subs and len(first_episode.subtitles) == 0
+        else:
+            needs_more_subs = any(loc.lower() not in subtitle_map for loc in subs_langs)
+
         if needs_more_subs:
             print("Fetching subtitles from versions...")
-            for version in info.episode_metadata.versions:
-                if version.guid and version.guid != first_playback_id:
-                    print(f"Checking subtitle source: {track_title(version.audio_locale)}...")
-                    v_ep = get_episode(
-                        client,
-                        version.guid,
-                        debug=debug,
-                        playback_id=version.guid,
-                        queue=1,
-                    )
+            candidate_versions = [
+                v for v in info.episode_metadata.versions
+                if v.guid and v.guid != first_playback_id
+            ]
+            # Prioritize ja-JP because Crunchyroll attaches all soft subtitle tracks to the Japanese version.
+            candidate_versions.sort(key=lambda v: 0 if (getattr(v, "audio_locale", "") or "").lower() == "ja-jp" else 1)
+            selected_audio_guids = {v.guid for v in versions if v.guid}
+
+            for v_idx, version in enumerate(candidate_versions):
+                print(f"Checking subtitle source: {track_title(version.audio_locale)}...")
+                if v_idx > 0:
+                    time.sleep(0.5)
+                v_ep = get_episode(
+                    client,
+                    version.guid,
+                    debug=debug,
+                    playback_id=version.guid,
+                    queue=1,
+                )
+                if version.guid in selected_audio_guids:
                     playback_cache[version.guid] = v_ep
                     active_streams[version.guid] = v_ep.token
-                    for locale, subtitle in v_ep.subtitles.items():
-                        first_episode.subtitles.setdefault(locale, subtitle)
-                    subtitle_map = _locale_map(first_episode.subtitles)
-                    if not subs_all and all(loc.lower() in subtitle_map for loc in subs_langs):
-                        break
+                else:
+                    # Temporary session for subtitles only: release immediately to avoid hitting concurrent playback limit (KAT-3002)
+                    if v_ep.token:
+                        delete_stream(client, version.guid, v_ep.token)
+
+                for locale, subtitle in v_ep.subtitles.items():
+                    first_episode.subtitles.setdefault(locale, subtitle)
+                subtitle_map = _locale_map(first_episode.subtitles)
+                if not subs_all and all(loc.lower() in subtitle_map for loc in subs_langs):
+                    break
+                # ja-JP provides the complete master subtitle catalog
+                if (getattr(version, "audio_locale", "") or "").lower() == "ja-jp" and v_ep.subtitles:
+                    break
+                # Never query more than 2 candidate versions for subtitles
+                if v_idx >= 1 and first_episode.subtitles:
+                    break
 
             if not first_episode.subtitles:
                 print("Warning: Failed to fetch subtitles!")
@@ -1009,6 +1036,13 @@ def download_episode(
                     is_default=len(audio_tracks) == 0,
                 )
             )
+            # Secondary audio track download is complete; release its stream immediately
+            # so we do not hold multiple active playback sessions concurrently on Crunchyroll.
+            if i > 0:
+                token_to_del = active_streams.pop(content_id, None)
+                if token_to_del:
+                    delete_stream(client, content_id, token_to_del)
+
             print(
                 f"Downloaded audio: {track_title(version.audio_locale)}"
                 + (" (default)" if audio_tracks[-1].is_default else "")
