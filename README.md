@@ -6,7 +6,7 @@
 
 [![Release](https://img.shields.io/github/v/release/Vure-sh/crunchyroller?color=black&style=for-the-badge)](https://github.com/Vure-sh/crunchyroller/releases/latest)
 [![Stars](https://img.shields.io/github/stars/Vure-sh/crunchyroller?color=ffd700&style=for-the-badge)](https://github.com/Vure-sh/crunchyroller/stargazers)
-[![Downloads & Clones](https://img.shields.io/badge/Downloads%20%26%20Clones-250%2B-black?style=for-the-badge)](https://github.com/Vure-sh/crunchyroller/releases)
+[![Downloads & Clones](https://img.shields.io/badge/Downloads%20%26%20Clones-400%2B-black?style=for-the-badge)](https://github.com/Vure-sh/crunchyroller/releases)
 
 ---
 
