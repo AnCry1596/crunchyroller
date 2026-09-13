@@ -4,8 +4,12 @@ import uuid
 from typing import Dict, Any, Optional, Tuple
 import requests
 
+import threading
+import shutil
+
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_FILE = os.path.join(_PROJECT_ROOT, "config.json")
+CONFIG_LOCK = threading.RLock()
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "video_quality": "1080p",
@@ -16,36 +20,106 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
+def _find_fallback_config() -> Optional[str]:
+    """Look for an existing non-empty config.json in sibling crunchyroller directories if current is missing."""
+    parent_dir = os.path.dirname(_PROJECT_ROOT)
+    candidate_dirs = [
+        os.path.join(parent_dir, "crunchyroller"),
+        os.path.join(parent_dir, "crunchyroller-fresh"),
+        os.path.join(parent_dir, "ancry-crunchyroller"),
+    ]
+    for c_dir in candidate_dirs:
+        c_path = os.path.join(c_dir, "config.json")
+        if c_path != CONFIG_FILE and os.path.isfile(c_path):
+            try:
+                if os.path.getsize(c_path) > 10:
+                    with open(c_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and (data.get("etp_rt") or data.get("username") or data.get("android_access_token")):
+                        return c_path
+            except Exception:
+                continue
+    return None
+
+
 def save_config(config_dict: Dict[str, Any], config_path: str = CONFIG_FILE) -> None:
-    """save settings"""
-    existing: Dict[str, Any] = {}
-    if os.path.exists(config_path):
+    """Safely and atomically update settings in config.json without losing existing keys."""
+    with CONFIG_LOCK:
+        existing: Dict[str, Any] = {}
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                    if content:
+                        loaded = json.loads(content)
+                        if isinstance(loaded, dict):
+                            existing = loaded
+            except Exception as e:
+                # If file exists but is unparseable, NEVER overwrite/truncate it with empty dict!
+                print(f"[config] Warning: Failed to parse existing {config_path} ({e}); backing up before rewrite.")
+                try:
+                    import time
+                    bak_path = f"{config_path}.bak.{int(time.time())}"
+                    shutil.copy2(config_path, bak_path)
+                except Exception:
+                    pass
+
+        # Update existing keys without wiping unmentioned keys
+        for k, v in config_dict.items():
+            if v is not None:
+                existing[k] = v
+
+        # Atomic write via temporary file in the same directory + os.replace
+        dir_name = os.path.dirname(os.path.abspath(config_path)) or "."
+        base_name = os.path.basename(config_path)
+        temp_path = os.path.join(dir_name, f".{base_name}.tmp.{os.getpid()}")
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-        except Exception:
-            existing = {}
-    existing.update(config_dict)
-    try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(existing, f, indent=4)
-    except Exception as e:
-        print(f"Warning: Failed to save config to {config_path}: {e}")
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=4)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, config_path)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                try: os.remove(temp_path)
+                except Exception: pass
+            print(f"[config] Warning: Failed to save config to {config_path}: {e}")
 
 
 def load_config(config_path: str = CONFIG_FILE) -> Dict[str, Any]:
-    """load config if it exists, or automatically create it with defaults if missing"""
-    if not os.path.exists(config_path):
+    """Load config from disk. If file does not exist, initialize it safely."""
+    with CONFIG_LOCK:
+        if not os.path.exists(config_path):
+            # Check if a sibling workspace has an existing config to inherit
+            fallback = _find_fallback_config()
+            if fallback and os.path.isfile(fallback):
+                try:
+                    with open(fallback, "r", encoding="utf-8") as f:
+                        inherited = json.load(f)
+                    if isinstance(inherited, dict) and inherited:
+                        save_config(inherited, config_path)
+                        return dict(inherited)
+                except Exception:
+                    pass
+
+            try:
+                save_config(DEFAULT_CONFIG, config_path)
+                return dict(DEFAULT_CONFIG)
+            except Exception:
+                return dict(DEFAULT_CONFIG)
+
         try:
-            save_config(DEFAULT_CONFIG, config_path)
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if not content:
+                    return dict(DEFAULT_CONFIG)
+                data = json.loads(content)
+                if isinstance(data, dict):
+                    return data
+                return dict(DEFAULT_CONFIG)
+        except Exception as e:
+            print(f"[config] Warning: Error reading {config_path}: {e}")
             return dict(DEFAULT_CONFIG)
-        except Exception:
-            return dict(DEFAULT_CONFIG)
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return dict(DEFAULT_CONFIG)
 
 
 def get_device_id(config_path: str = CONFIG_FILE) -> str:

@@ -348,6 +348,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 STATE["download"]["history"] = q_state["history"]
                 STATE["download"]["tasks"] = q_state.get("tasks", [])
 
+                # Keep STATE in sync with config.json on disk so manual user edits are immediately honored
+                disk_cfg = load_config()
+                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download"):
+                    if k in disk_cfg:
+                        STATE["config"][k] = disk_cfg[k]
+                if disk_cfg.get("etp_rt"):
+                    STATE["etp_rt"] = disk_cfg["etp_rt"]
+                if disk_cfg.get("android_access_token"):
+                    STATE["android_token"] = disk_cfg["android_access_token"]
+
                 self._json({
                     "authenticated": auth_type != "none",
                     "auth_type": auth_type,
@@ -507,16 +517,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 acc_tok, ref_tok = login_with_android_tv(username, password)
                 with LOCK:
                     STATE["android_token"] = acc_tok
-                    STATE["etp_rt"] = ""
+                save_config({
+                    "android_access_token": acc_tok,
+                    "android_refresh_token": ref_tok,
+                    "username": username,
+                })
                 self._json({"success": True, "message": "Logged in successfully!"})
             except Exception as e:
                 self._json({"success": False, "error": str(e)}, 401)
 
         elif path == "/api/config":
             with LOCK:
-                for k in ("video_quality","audio_quality","audio_lang","subs_lang","force_download"):
-                    if k in data: STATE["config"][k] = data[k]
-            save_config(STATE["config"])
+                disk_cfg = load_config()
+                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download"):
+                    if k in data:
+                        STATE["config"][k] = data[k]
+                        disk_cfg[k] = data[k]
+            save_config(disk_cfg)
             self._json({"success": True})
 
         elif path == "/api/fetch":
