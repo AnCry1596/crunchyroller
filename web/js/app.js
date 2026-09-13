@@ -725,6 +725,9 @@ async function startDl() {
     return;
   }
 
+  const animeTitle = (document.getElementById('ser-title')?.textContent || '').trim() ||
+                     (selected.find(s => s.series_title)?.series_title) || 'Anime';
+
   const vqVal = ddVideo ? ddVideo.value : (document.getElementById('vq').value || '1080p');
   const aqVal = ddAudioQual ? ddAudioQual.value : (document.getElementById('aq').value || '192k');
   const audioVal = ddAudio ? ddAudio.value : (document.getElementById('al').value || 'ja-JP');
@@ -732,6 +735,8 @@ async function startDl() {
 
   const res = await api('/api/download', {
     items: selected,
+    task_title: animeTitle,
+    series_title: animeTitle,
     video_quality: vqVal,
     audio_quality: aqVal,
     audio_lang: audioVal,
@@ -744,7 +749,7 @@ async function startDl() {
     return;
   }
 
-  toast(res.message || (selected.length + ' episode(s) added to queue'));
+  toast(res.message || (`${selected.length} episode(s) added to task: ${animeTitle}`));
   document.getElementById('dl-panel').style.display = 'block';
   startPolling();
 }
@@ -757,7 +762,8 @@ function startPolling() {
       updateProgressPanel(state.download);
       const isRunning = state.download.status === 'running' || state.download.status === 'paused';
       const hasQueue = state.download.queue && state.download.queue.length > 0;
-      if (!isRunning && !hasQueue) {
+      const hasActiveTasks = state.download.tasks && state.download.tasks.some(t => t.status === 'running' || t.status === 'queued');
+      if (!isRunning && !hasQueue && !hasActiveTasks) {
         clearInterval(pollTimer);
         pollTimer = null;
       }
@@ -825,7 +831,7 @@ async function removeFromQueue(jobId) {
 }
 
 async function clearQueue() {
-  if (!confirm('Clear all upcoming episodes from queue?')) return;
+  if (!confirm('Clear all upcoming episodes and finished tasks?')) return;
   const res = await api('/api/queue/clear', {});
   if (res && res.success) {
     toast('Queue cleared (' + (res.cleared || 0) + ' items)');
@@ -838,8 +844,48 @@ async function clearQueue() {
   }
 }
 
+const collapsedTaskIds = new Set();
+
+function toggleTaskAccordion(taskId) {
+  if (collapsedTaskIds.has(taskId)) {
+    collapsedTaskIds.delete(taskId);
+  } else {
+    collapsedTaskIds.add(taskId);
+  }
+  const card = document.querySelector(`.task-card[data-task-id="${taskId}"]`);
+  if (card) {
+    card.classList.toggle('collapsed', collapsedTaskIds.has(taskId));
+  }
+}
+
+async function cancelTask(taskId, e) {
+  if (e) e.stopPropagation();
+  const card = document.querySelector(`.task-card[data-task-id="${taskId}"]`);
+  const isFinished = card && (card.classList.contains('completed') || card.classList.contains('canceled') || card.classList.contains('failed'));
+  const promptMsg = isFinished ? 'Dismiss this anime task?' : 'Cancel this anime download task?';
+  if (!confirm(promptMsg)) return;
+
+  const res = await api('/api/task/remove', { id: taskId });
+  if (res && res.success) {
+    toast(isFinished ? 'Task dismissed' : 'Task canceled');
+    const state = await api('/api/state');
+    if (state && state.download) {
+      updateProgressPanel(state.download);
+    }
+  } else {
+    toast(res?.error || 'Failed to update task', 'err');
+  }
+}
+
 function updateProgressPanel(dl) {
-  if (!dl || (dl.status === 'idle' && (!dl.queue || dl.queue.length === 0))) return;
+  if (!dl) return;
+  const hasTasks = dl.tasks && dl.tasks.length > 0;
+  const hasQueue = dl.queue && dl.queue.length > 0;
+  const isRunning = dl.status === 'running' || dl.status === 'paused';
+
+  if (!isRunning && !hasTasks && !hasQueue && dl.status === 'idle') {
+    return;
+  }
   document.getElementById('dl-panel').style.display = 'block';
 
   const pill = document.getElementById('pill');
@@ -848,7 +894,7 @@ function updateProgressPanel(dl) {
   const cancelBtn = document.getElementById('dl-cancel-btn');
 
   if (pauseBtn && cancelBtn) {
-    if (dl.status === 'running' || dl.status === 'paused') {
+    if (isRunning) {
       pauseBtn.style.display = 'inline-block';
       cancelBtn.style.display = 'inline-block';
       if (skipBtn) skipBtn.style.display = 'inline-block';
@@ -927,62 +973,237 @@ function updateProgressPanel(dl) {
     logBox.scrollTop = logBox.scrollHeight;
   }
 
-  // Update Queue Panel
+  // Update Tasks & Queue Panel
   const qPanel = document.getElementById('queue-panel');
   const qList = document.getElementById('queue-list');
   const qBadge = document.getElementById('queue-badge');
   if (qPanel && qList) {
+    const tasks = dl.tasks || [];
     const queue = dl.queue || [];
-    if (queue.length > 0) {
+
+    if (tasks.length > 0 || queue.length > 0) {
       qPanel.style.display = 'block';
-      if (qBadge) qBadge.textContent = String(queue.length);
+      if (qBadge) {
+        const queuedCount = dl.queued_count !== undefined ? dl.queued_count : queue.length;
+        qBadge.textContent = String(queuedCount);
+      }
       qList.innerHTML = '';
-      queue.forEach((item, index) => {
-        const row = document.createElement('div');
-        row.className = 'queue-item';
 
-        const num = document.createElement('span');
-        num.className = 'queue-num';
-        num.textContent = `#${index + 1}`;
+      if (tasks.length > 0) {
+        tasks.forEach((task) => {
+          const card = document.createElement('div');
+          const isCollapsed = collapsedTaskIds.has(task.id);
+          card.className = `task-card ${task.status}` + (isCollapsed ? ' collapsed' : '');
+          card.dataset.taskId = task.id;
 
-        const info = document.createElement('div');
-        info.className = 'queue-info';
+          const header = document.createElement('div');
+          header.className = 'task-header';
+          header.onclick = () => toggleTaskAccordion(task.id);
 
-        const title = document.createElement('div');
-        title.className = 'queue-title';
-        title.textContent = item.label || item.title || item.ep_id;
+          const left = document.createElement('div');
+          left.className = 'task-left';
 
-        const meta = document.createElement('div');
-        meta.className = 'queue-meta';
+          // Circular progress meter
+          const pct = Math.max(0, Math.min(100, Number(task.progress_pct) || 0));
+          const dashoffset = (100 - pct).toFixed(1);
+          let meterText = Math.round(pct) + '%';
+          if (task.status === 'completed' || (pct >= 100 && task.status !== 'failed' && task.status !== 'canceled')) {
+            meterText = '✓';
+          } else if (task.status === 'canceled' || task.status === 'failed') {
+            meterText = '✕';
+          }
 
-        if (item.video_quality) {
-          const vqTag = document.createElement('span');
-          vqTag.className = 'queue-tag';
-          vqTag.textContent = item.video_quality;
-          meta.appendChild(vqTag);
-        }
+          const meterWrap = document.createElement('div');
+          meterWrap.className = 'task-meter-wrap';
+          meterWrap.innerHTML = `
+            <svg class="task-circle-meter ${task.status}" viewBox="0 0 36 36">
+              <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+              <path class="circle-prog" stroke-dasharray="100 100" stroke-dashoffset="${dashoffset}" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+              <text x="18" y="20.5" class="circle-text">${meterText}</text>
+            </svg>
+          `;
 
-        if (item.audio_langs && item.audio_langs.length) {
-          const alTag = document.createElement('span');
-          alTag.className = 'queue-tag';
-          alTag.textContent = item.audio_langs.join(', ');
-          meta.appendChild(alTag);
-        }
+          const titleGroup = document.createElement('div');
+          titleGroup.className = 'task-title-group';
 
-        info.append(title, meta);
+          const animeTitle = document.createElement('div');
+          animeTitle.className = 'task-anime-title';
+          animeTitle.textContent = task.series_title || task.title || 'Anime Download';
+          animeTitle.title = animeTitle.textContent;
 
-        const removeBtn = document.createElement('button');
-        removeBtn.className = 'queue-remove-btn';
-        removeBtn.innerHTML = '✕';
-        removeBtn.title = 'Remove from queue';
-        removeBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          removeFromQueue(item.id || item.ep_id);
+          const metaRow = document.createElement('div');
+          metaRow.className = 'task-meta-row';
+
+          const statusPill = document.createElement('span');
+          statusPill.className = `task-status-pill ${task.status}`;
+          statusPill.textContent = task.status;
+          metaRow.appendChild(statusPill);
+
+          const epCount = document.createElement('span');
+          epCount.className = 'task-ep-count';
+          epCount.textContent = `${task.completed || 0} / ${task.total || 0} eps`;
+          metaRow.appendChild(epCount);
+
+          if (task.video_quality) {
+            const vqTag = document.createElement('span');
+            vqTag.className = 'task-tag';
+            vqTag.textContent = task.video_quality;
+            metaRow.appendChild(vqTag);
+          }
+
+          if (task.audio_langs && task.audio_langs.length) {
+            const alTag = document.createElement('span');
+            alTag.className = 'task-tag';
+            alTag.textContent = task.audio_langs.join(', ');
+            metaRow.appendChild(alTag);
+          }
+
+          titleGroup.append(animeTitle, metaRow);
+          left.append(meterWrap, titleGroup);
+
+          const right = document.createElement('div');
+          right.className = 'task-right';
+
+          const cancelBtn = document.createElement('button');
+          cancelBtn.className = 'task-cancel-btn';
+          cancelBtn.innerHTML = '✕';
+          cancelBtn.title = (task.status === 'completed' || task.status === 'canceled') ? 'Dismiss task' : 'Cancel task';
+          cancelBtn.onclick = (e) => cancelTask(task.id, e);
+
+          const chevron = document.createElement('span');
+          chevron.className = 'task-chevron';
+          chevron.textContent = '▼';
+
+          right.append(cancelBtn, chevron);
+          header.append(left, right);
+
+          const body = document.createElement('div');
+          body.className = 'task-body';
+
+          const episodes = task.episodes || [];
+          if (episodes.length === 0) {
+            const emptyMsg = document.createElement('div');
+            emptyMsg.style.cssText = 'color:var(--dim);font-size:0.72rem;padding:4px;';
+            emptyMsg.textContent = 'No episodes';
+            body.appendChild(emptyMsg);
+          } else {
+            episodes.forEach((ep) => {
+              const epRow = document.createElement('div');
+              epRow.className = `task-ep-row status-${ep.status}`;
+
+              const epLeft = document.createElement('div');
+              epLeft.className = 'task-ep-left';
+
+              const epIco = document.createElement('span');
+              if (ep.status === 'completed') {
+                epIco.className = 'ep-ico ep-ico-done';
+                epIco.textContent = '✓';
+              } else if (ep.status === 'running') {
+                epIco.className = 'ep-ico ep-ico-run';
+                epIco.innerHTML = '<span class="spin"></span>';
+              } else if (ep.status === 'paused') {
+                epIco.className = 'ep-ico ep-ico-paused';
+                epIco.textContent = '⏸';
+              } else if (ep.status === 'canceled') {
+                epIco.className = 'ep-ico ep-ico-err';
+                epIco.textContent = '✕';
+              } else if (ep.status === 'failed') {
+                epIco.className = 'ep-ico ep-ico-err';
+                epIco.textContent = '!';
+              } else {
+                epIco.className = 'ep-ico ep-ico-queued';
+                epIco.textContent = '⋯';
+              }
+
+              const epLabel = document.createElement('span');
+              epLabel.className = 'task-ep-label';
+              epLabel.textContent = ep.label || ep.title || ep.ep_id;
+              epLabel.title = epLabel.textContent;
+
+              epLeft.append(epIco, epLabel);
+
+              const epRight = document.createElement('div');
+              epRight.className = 'task-ep-right';
+
+              if (ep.status === 'running' && ep.progress !== undefined) {
+                const epProg = document.createElement('span');
+                epProg.className = 'task-ep-prog';
+                epProg.textContent = `${Number(ep.progress).toFixed(0)}%`;
+                epRight.appendChild(epProg);
+              } else if (ep.status === 'completed' && ep.file_size_mb) {
+                const epSize = document.createElement('span');
+                epSize.className = 'task-ep-size';
+                epSize.textContent = `${ep.file_size_mb} MB`;
+                epRight.appendChild(epSize);
+              } else if (ep.status === 'queued') {
+                const epRemove = document.createElement('button');
+                epRemove.className = 'queue-remove-btn';
+                epRemove.innerHTML = '✕';
+                epRemove.title = 'Remove episode from queue';
+                epRemove.onclick = (e) => {
+                  e.stopPropagation();
+                  removeFromQueue(ep.id || ep.ep_id);
+                };
+                epRight.appendChild(epRemove);
+              }
+
+              epRow.append(epLeft, epRight);
+              body.appendChild(epRow);
+            });
+          }
+
+          card.append(header, body);
+          qList.appendChild(card);
         });
+      } else {
+        // Fallback flat queue items rendering
+        queue.forEach((item, index) => {
+          const row = document.createElement('div');
+          row.className = 'queue-item';
 
-        row.append(num, info, removeBtn);
-        qList.appendChild(row);
-      });
+          const num = document.createElement('span');
+          num.className = 'queue-num';
+          num.textContent = `#${index + 1}`;
+
+          const info = document.createElement('div');
+          info.className = 'queue-info';
+
+          const title = document.createElement('div');
+          title.className = 'queue-title';
+          title.textContent = item.label || item.title || item.ep_id;
+
+          const meta = document.createElement('div');
+          meta.className = 'queue-meta';
+
+          if (item.video_quality) {
+            const vqTag = document.createElement('span');
+            vqTag.className = 'queue-tag';
+            vqTag.textContent = item.video_quality;
+            meta.appendChild(vqTag);
+          }
+
+          if (item.audio_langs && item.audio_langs.length) {
+            const alTag = document.createElement('span');
+            alTag.className = 'queue-tag';
+            alTag.textContent = item.audio_langs.join(', ');
+            meta.appendChild(alTag);
+          }
+
+          info.append(title, meta);
+
+          const removeBtn = document.createElement('button');
+          removeBtn.className = 'queue-remove-btn';
+          removeBtn.innerHTML = '✕';
+          removeBtn.title = 'Remove from queue';
+          removeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            removeFromQueue(item.id || item.ep_id);
+          });
+
+          row.append(num, info, removeBtn);
+          qList.appendChild(row);
+        });
+      }
     } else {
       qPanel.style.display = 'none';
     }

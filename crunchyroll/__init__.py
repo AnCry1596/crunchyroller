@@ -41,7 +41,7 @@ from .merger import merge_everything
 from .http_client import CrunchyrollHttpClient
 from .decryptor import decrypt_stream, decrypt_mp4
 from .integrity import StreamValidator, atomic_finalize
-from .queue import DownloadQueue, QueueItem
+from .queue import DownloadQueue, QueueItem, DownloadTask
 
 __all__ = [
     "download_episode",
@@ -54,4 +54,5 @@ __all__ = [
     "atomic_finalize",
     "DownloadQueue",
     "QueueItem",
+    "DownloadTask",
 ]

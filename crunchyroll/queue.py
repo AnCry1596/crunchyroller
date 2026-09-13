@@ -39,6 +39,7 @@ class QueueItem:
     finished_at: Optional[float] = None
     output_file: Optional[str] = None
     file_size_mb: float = 0.0
+    task_id: str = ""
 
     @property
     def label(self) -> str:
@@ -70,6 +71,81 @@ class QueueItem:
             "finished_at": self.finished_at,
             "output_file": self.output_file,
             "file_size_mb": round(self.file_size_mb, 1),
+            "task_id": self.task_id,
+        }
+
+
+@dataclass
+class DownloadTask:
+    id: str
+    series_title: str
+    video_quality: str = "1080p"
+    audio_quality: str = "192k"
+    audio_langs: List[str] = field(default_factory=lambda: ["ja-JP"])
+    subs_langs: List[str] = field(default_factory=lambda: ["en-US"])
+    status: str = "queued"  # queued | running | paused | completed | canceled | failed
+    item_ids: List[str] = field(default_factory=list)
+    created_at: float = field(default_factory=time.time)
+
+    def to_dict(
+        self,
+        items_map: Dict[str, QueueItem],
+        active_job_id: Optional[str] = None,
+        active_progress_pct: float = 0.0,
+    ) -> Dict[str, Any]:
+        task_items = [items_map[iid] for iid in self.item_ids if iid in items_map]
+        total = len(task_items)
+        completed = sum(1 for it in task_items if it.status == "completed")
+        failed = sum(1 for it in task_items if it.status == "failed")
+        canceled = sum(1 for it in task_items if it.status == "canceled")
+        is_active = any(it.id == active_job_id for it in task_items)
+
+        if total == 0:
+            progress = 0.0
+        elif completed == total:
+            progress = 100.0
+        else:
+            base = completed / total
+            active_slice = (active_progress_pct / 100.0) / total if is_active else 0.0
+            progress = round(min(99.9, (base + active_slice) * 100.0), 1)
+
+        if is_active:
+            st = "paused" if any(it.status == "paused" for it in task_items) else "running"
+        elif completed == total and total > 0:
+            st = "completed"
+        elif completed + failed + canceled == total and total > 0:
+            st = "failed" if failed > 0 else "canceled"
+        elif any(it.status == "paused" for it in task_items):
+            st = "paused"
+        elif any(it.status == "queued" for it in task_items):
+            st = "queued"
+        else:
+            st = self.status
+
+        episodes_list = []
+        for it in task_items:
+            ep_dict = it.to_dict()
+            if it.id == active_job_id:
+                ep_dict["progress"] = active_progress_pct
+                ep_dict["status"] = "paused" if st == "paused" else "running"
+            episodes_list.append(ep_dict)
+
+        return {
+            "id": self.id,
+            "title": self.series_title or "Anime Download",
+            "series_title": self.series_title or "Anime Download",
+            "status": st,
+            "total": total,
+            "completed": completed,
+            "failed": failed,
+            "canceled": canceled,
+            "progress_pct": progress,
+            "video_quality": self.video_quality,
+            "audio_quality": self.audio_quality,
+            "audio_langs": self.audio_langs,
+            "subs_langs": self.subs_langs,
+            "episodes": episodes_list,
+            "created_at": self.created_at,
         }
 
 
@@ -104,6 +180,8 @@ class DownloadQueue:
         self.queue: deque[QueueItem] = deque()
         self.active_job: Optional[QueueItem] = None
         self.history: List[QueueItem] = []
+        self.tasks: Dict[str, DownloadTask] = {}
+        self.all_items_map: Dict[str, QueueItem] = {}
         self.worker_thread: Optional[threading.Thread] = None
         self.cancel_all_flag: bool = False
 
@@ -137,13 +215,15 @@ class DownloadQueue:
         self,
         item: Any,
         default_options: Optional[Dict[str, Any]] = None,
+        task_id: Optional[str] = None,
+        task_title: Optional[str] = None,
     ) -> Optional[QueueItem]:
         """Enqueue a single episode item. Returns the created QueueItem or None if duplicate."""
         opts = default_options or {}
         if isinstance(item, dict):
             ep_id = str(item.get("id") or item.get("ep_id") or "").strip()
             title = str(item.get("title") or "").strip()
-            series_title = str(item.get("series_title") or "").strip()
+            series_title = str(item.get("series_title") or task_title or opts.get("series_title") or "").strip()
             season_num = int(item.get("season_number") or 0)
             ep_num = int(item.get("episode_number") or 0)
             vq = str(item.get("video_quality") or opts.get("video_quality") or "1080p")
@@ -154,7 +234,7 @@ class DownloadQueue:
         else:
             ep_id = str(item).strip()
             title = ""
-            series_title = ""
+            series_title = str(task_title or opts.get("series_title") or "").strip()
             season_num = 0
             ep_num = 0
             vq = str(opts.get("video_quality") or "1080p")
@@ -187,8 +267,10 @@ class DownloadQueue:
                 subs_langs=sl,
                 force_download=fd,
                 status="queued",
+                task_id=task_id or "",
             )
             self.queue.append(job)
+            self.all_items_map[job.id] = job
 
             if self.active_job is None and len(self.queue) == 1:
                 # Reset counters for a fresh batch
@@ -209,13 +291,41 @@ class DownloadQueue:
         self,
         items: List[Any],
         default_options: Optional[Dict[str, Any]] = None,
+        task_title: Optional[str] = None,
     ) -> List[QueueItem]:
-        """Enqueue multiple episodes sequentially."""
+        """Enqueue multiple episodes sequentially under an anime task."""
+        opts = default_options or {}
+        anime_name = str(task_title or opts.get("task_title") or opts.get("series_title") or "").strip()
+        if not anime_name and items and isinstance(items[0], dict):
+            anime_name = str(items[0].get("series_title") or "").strip()
+        if not anime_name:
+            anime_name = "Anime"
+
+        vq = str(opts.get("video_quality") or "1080p")
+        aq = str(opts.get("audio_quality") or "192k")
+        al = normalize_langs(opts.get("audio_lang") or ["ja-JP"])
+        sl = normalize_langs(opts.get("subs_lang") or ["en-US"])
+
+        task_id = f"task-{uuid.uuid4().hex[:8]}"
+        task = DownloadTask(
+            id=task_id,
+            series_title=anime_name,
+            video_quality=vq,
+            audio_quality=aq,
+            audio_langs=al,
+            subs_langs=sl,
+        )
+
         enqueued: List[QueueItem] = []
         for it in items:
-            job = self.enqueue(it, default_options)
+            job = self.enqueue(it, default_options, task_id=task_id, task_title=anime_name)
             if job:
+                task.item_ids.append(job.id)
                 enqueued.append(job)
+
+        if task.item_ids:
+            with self.lock:
+                self.tasks[task_id] = task
         return enqueued
 
     def remove(self, job_id: str) -> bool:
@@ -228,6 +338,7 @@ class DownloadQueue:
                     break
             if target:
                 self.queue.remove(target)
+                target.status = "canceled"
                 self.total_batch_count = max(
                     self.completed_batch_count + (1 if self.active_job else 0),
                     self.total_batch_count - 1,
@@ -236,12 +347,45 @@ class DownloadQueue:
                 return True
         return False
 
+    def remove_task(self, task_id: str) -> bool:
+        """Cancel/remove an entire anime task and its queued episodes."""
+        with self.lock:
+            if task_id not in self.tasks:
+                return False
+            task = self.tasks[task_id]
+            if task.status in ("completed", "canceled", "failed"):
+                del self.tasks[task_id]
+                self.log(f"Dismissed task: {task.series_title}")
+                return True
+
+            task.status = "canceled"
+            # Cancel active job if it belongs to this task
+            if self.active_job and self.active_job.id in task.item_ids:
+                self.cancel_current()
+
+            # Remove pending episodes from queue
+            removed_count = 0
+            to_remove = [j for j in self.queue if j.id in task.item_ids]
+            for j in to_remove:
+                self.queue.remove(j)
+                j.status = "canceled"
+                removed_count += 1
+
+            self.total_batch_count = max(self.completed_batch_count, self.total_batch_count - removed_count)
+            self.log(f"Canceled task: {task.series_title} ({removed_count} item(s) removed)")
+            return True
+
     def clear(self) -> int:
         """Clear all pending jobs in the queue."""
         with self.lock:
             count = len(self.queue)
+            for j in self.queue:
+                j.status = "canceled"
             self.queue.clear()
             self.total_batch_count = self.completed_batch_count + (1 if self.active_job else 0)
+            finished_tasks = [tid for tid, t in self.tasks.items() if t.status in ("completed", "canceled", "failed")]
+            for tid in finished_tasks:
+                del self.tasks[tid]
             self.log(f"Queue cleared ({count} item(s) removed).")
             return count
 
@@ -279,6 +423,9 @@ class DownloadQueue:
             self.cancel_all_flag = True
             cleared = len(self.queue)
             self.queue.clear()
+            for t in self.tasks.values():
+                if t.status in ("queued", "running"):
+                    t.status = "canceled"
             self.total_batch_count = self.completed_batch_count
             self.last_status = "canceled"
             self.speed = ""
@@ -296,6 +443,15 @@ class DownloadQueue:
     def get_active_job(self) -> Optional[Dict[str, Any]]:
         with self.lock:
             return self.active_job.to_dict() if self.active_job else None
+
+    def get_tasks_list(self) -> List[Dict[str, Any]]:
+        with self.lock:
+            active_id = self.active_job.id if self.active_job else None
+            tasks_sorted = sorted(self.tasks.values(), key=lambda t: t.created_at)
+            return [
+                t.to_dict(self.all_items_map, active_job_id=active_id, active_progress_pct=self.track_pct)
+                for t in tasks_sorted
+            ]
 
     def get_state(self) -> Dict[str, Any]:
         """Return standardized state dict compatible with web GUI status panel and queue."""
@@ -344,6 +500,7 @@ class DownloadQueue:
                 "queue": [j.to_dict() for j in list(self.queue)],
                 "active_job": self.active_job.to_dict() if self.active_job else None,
                 "history": [j.to_dict() for j in list(self.history[-10:])],
+                "tasks": self.get_tasks_list(),
             }
 
     def _ensure_worker_running(self):

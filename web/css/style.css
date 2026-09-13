@@ -1305,3 +1305,343 @@ hr.div {
   background: rgba(255, 85, 85, 0.1);
   border-color: rgba(255, 85, 85, 0.25);
 }
+
+/* ── Anime Download Tasks ── */
+.task-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.015);
+  margin-bottom: 8px;
+  overflow: hidden;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.task-card:last-child {
+  margin-bottom: 0;
+}
+
+.task-card:hover {
+  border-color: var(--border-hover);
+}
+
+.task-card.running {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.task-card.paused {
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.task-card.completed {
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.task-card.canceled,
+.task-card.failed {
+  border-color: rgba(255, 85, 85, 0.25);
+  opacity: 0.85;
+}
+
+.task-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.02);
+  transition: background 0.15s ease;
+  gap: 10px;
+}
+
+.task-header:hover {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.task-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+/* Circular Meter */
+.task-meter-wrap {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.task-circle-meter {
+  width: 38px;
+  height: 38px;
+  display: block;
+}
+
+.task-circle-meter .circle-bg {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 2.8;
+}
+
+.task-circle-meter .circle-prog {
+  fill: none;
+  stroke-width: 2.8;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.35s ease, stroke 0.25s ease;
+  stroke: var(--white);
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.4));
+}
+
+.task-circle-meter.completed .circle-prog {
+  stroke: #22c55e;
+  filter: drop-shadow(0 0 4px rgba(34, 197, 94, 0.5));
+}
+
+.task-circle-meter.paused .circle-prog {
+  stroke: #f59e0b;
+  filter: drop-shadow(0 0 3px rgba(245, 158, 11, 0.4));
+}
+
+.task-circle-meter.canceled .circle-prog,
+.task-circle-meter.failed .circle-prog {
+  stroke: #ef4444;
+  filter: drop-shadow(0 0 3px rgba(239, 68, 68, 0.4));
+}
+
+.task-circle-meter.queued .circle-prog {
+  stroke: rgba(255, 255, 255, 0.2);
+  filter: none;
+}
+
+.task-circle-meter .circle-text {
+  font-family: var(--font-mono, monospace);
+  font-size: 8px;
+  font-weight: 700;
+  text-anchor: middle;
+  fill: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+}
+
+.task-circle-meter.completed .circle-text {
+  fill: #22c55e;
+  font-size: 10.5px;
+}
+
+.task-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.task-anime-title {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--white);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: -0.2px;
+}
+
+.task-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.65rem;
+  color: var(--dim);
+  flex-wrap: wrap;
+}
+
+.task-status-pill {
+  font-size: 0.58rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+
+.task-status-pill.running {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.task-status-pill.paused {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.25);
+}
+
+.task-status-pill.completed {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.task-status-pill.canceled,
+.task-status-pill.failed {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.task-status-pill.queued {
+  color: var(--dim);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.task-tag {
+  font-size: 0.6rem;
+  font-weight: 500;
+  color: var(--dim);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  letter-spacing: 0.2px;
+}
+
+.task-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.task-cancel-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--dim);
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.75rem;
+  line-height: 1;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.task-cancel-btn:hover {
+  color: #ff5555;
+  background: rgba(255, 85, 85, 0.1);
+  border-color: rgba(255, 85, 85, 0.25);
+}
+
+.task-chevron {
+  font-size: 0.65rem;
+  color: var(--dim);
+  transition: transform 0.2s ease;
+  display: inline-block;
+  user-select: none;
+}
+
+.task-card.collapsed .task-chevron {
+  transform: rotate(-90deg);
+}
+
+.task-body {
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.25);
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 6px 8px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.task-card.collapsed .task-body {
+  display: none;
+}
+
+.task-ep-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.015);
+  font-size: 0.74rem;
+  transition: background 0.12s ease;
+}
+
+.task-ep-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.task-ep-row.status-running {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.task-ep-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.task-ep-label {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.74rem;
+}
+
+.ep-ico {
+  width: 14px;
+  display: inline-flex;
+  justify-content: center;
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+
+.ep-ico-done { color: #22c55e; }
+.ep-ico-run { color: #fff; }
+.ep-ico-paused { color: #f59e0b; }
+.ep-ico-queued { color: var(--dim); }
+.ep-ico-err { color: #ef4444; }
+
+.task-ep-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.task-ep-prog {
+  font-size: 0.65rem;
+  font-family: var(--font-mono, monospace);
+  color: var(--white);
+  font-weight: 600;
+  padding: 1px 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
+.task-ep-size {
+  font-size: 0.65rem;
+  font-family: var(--font-mono, monospace);
+  color: var(--dim);
+}

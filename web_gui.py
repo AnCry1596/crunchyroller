@@ -346,6 +346,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 STATE["download"]["queued_count"] = q_state["queued_count"]
                 STATE["download"]["active_job"] = q_state["active_job"]
                 STATE["download"]["history"] = q_state["history"]
+                STATE["download"]["tasks"] = q_state.get("tasks", [])
 
                 self._json({
                     "authenticated": auth_type != "none",
@@ -353,6 +354,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "config": STATE["config"],
                     "download": STATE["download"],
                     "queue": q_state["queue"],
+                    "tasks": q_state.get("tasks", []),
                 })
             return
 
@@ -399,6 +401,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "success": True,
                 "queue": QUEUE.get_queue_list(),
                 "active": QUEUE.get_active_job(),
+                "tasks": QUEUE.get_tasks_list(),
             })
             return
 
@@ -407,6 +410,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             qs = parse_qs(parsed_url.query)
             job_id = qs.get("id", [""])[0].strip()
             removed = QUEUE.remove(job_id)
+            self._json({"success": removed})
+            return
+
+        elif path == "/api/task/remove" or path == "/api/task/cancel":
+            from urllib.parse import parse_qs
+            qs = parse_qs(parsed_url.query)
+            task_id = qs.get("id", [""])[0].strip()
+            removed = QUEUE.remove_task(task_id)
             self._json({"success": removed})
             return
 
@@ -587,13 +598,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             sl = data.get("subs_lang", c["subs_lang"])
             fd = bool(data.get("force_download", c.get("force_download", False)))
 
+            task_title = str(data.get("task_title") or data.get("series_title") or "").strip()
             enqueued = QUEUE.enqueue_batch(items, {
                 "video_quality": vq,
                 "audio_quality": aq,
                 "audio_lang": al,
                 "subs_lang": sl,
                 "force_download": fd,
-            })
+            }, task_title=task_title)
             with LOCK:
                 STATE["download"]["status"] = "running"
             self._json({
@@ -640,6 +652,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/queue/remove":
             job_id = str(data.get("id", "")).strip()
             removed = QUEUE.remove(job_id)
+            self._json({"success": removed})
+
+        elif path == "/api/task/remove" or path == "/api/task/cancel":
+            task_id = str(data.get("id") or data.get("task_id") or "").strip()
+            removed = QUEUE.remove_task(task_id)
             self._json({"success": removed})
 
         elif path == "/api/queue/clear":
