@@ -15,7 +15,15 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import requests
 
-from .api import delete_stream, get_episode, get_episode_download, get_episode_info, get_season_episodes, get_series
+from .api import (
+    delete_stream,
+    get_episode,
+    get_episode_download,
+    get_episode_info,
+    get_season_episodes,
+    get_series,
+    purge_orphan_streams,
+)
 from .decryptor import decrypt_mp4, decrypt_stream
 from .drm import get_license
 from .http_client import CrunchyrollHttpClient
@@ -532,6 +540,7 @@ def _try_fallback_subtitles(
     )
 
     for version in candidate_versions:
+        v_ep = None
         try:
             v_ep = get_episode(client, version.guid, debug=False, playback_id=version.guid, queue=1)
             # 1. Check v_ep.subtitles
@@ -542,7 +551,9 @@ def _try_fallback_subtitles(
                     break
             if target_url:
                 try:
-                    return download_subs(target_url, pool=pool)
+                    res = download_subs(target_url, pool=pool)
+                    if res:
+                        return res
                 except Exception:
                     pass
             # 2. Check v_ep MPD manifest for embedded text/vtt tracks
@@ -553,11 +564,16 @@ def _try_fallback_subtitles(
                     for m_loc, m_url in manifest_subs.items():
                         m_clean = m_loc.strip().lower()
                         if m_clean == target_clean or (target_clean.startswith("en") and m_clean.startswith("en")):
-                            return download_subs(m_url, pool=pool)
+                            res = download_subs(m_url, pool=pool)
+                            if res:
+                                return res
                 except Exception:
                     pass
         except Exception:
             continue
+        finally:
+            if v_ep and getattr(v_ep, "token", None):
+                delete_stream(client, version.guid, v_ep.token)
     return None
 
 

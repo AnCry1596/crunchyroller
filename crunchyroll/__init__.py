@@ -36,6 +36,7 @@ if sys.platform == "win32":
 sys.stdout = _SafeStream(sys.stdout)
 sys.stderr = _SafeStream(sys.stderr)
 
+from .api import delete_stream, purge_orphan_streams
 from .downloader import download_episode, download_season
 from .merger import merge_everything
 from .http_client import CrunchyrollHttpClient
@@ -46,6 +47,8 @@ from .queue import DownloadQueue, QueueItem, DownloadTask
 __all__ = [
     "download_episode",
     "download_season",
+    "delete_stream",
+    "purge_orphan_streams",
     "merge_everything",
     "CrunchyrollHttpClient",
     "decrypt_stream",

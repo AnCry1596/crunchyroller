@@ -188,6 +188,11 @@ def get_episode(
     started_at = time.monotonic()
     try:
         response = client.do_request("GET", android_url, headers=android_headers)
+        if "3002" in getattr(response, "text", ""):
+            print("[playback] Stream limit detected (3002) during Android TV request; auto-purging orphaned sessions...", flush=True)
+            purge_orphan_streams(client)
+            time.sleep(1.0)
+            response = client.do_request("GET", android_url, headers=android_headers)
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict):
@@ -215,6 +220,11 @@ def get_episode(
     web_started_at = time.monotonic()
     try:
         response = client.do_request("GET", web_url)
+        if "3002" in getattr(response, "text", ""):
+            print("[playback] Stream limit detected (3002) during web playback request; auto-purging orphaned sessions...", flush=True)
+            purge_orphan_streams(client)
+            time.sleep(1.0)
+            response = client.do_request("GET", web_url)
     except Exception as exc:
         elapsed = time.monotonic() - web_started_at
         print(
@@ -568,23 +578,110 @@ def delete_stream(
 ) -> bool:
     """Release a playback session using its content ID and playback token.
 
-    Cleanup is intentionally idempotent: an expired or already-removed
-    playback session is considered successfully cleaned up.
+    Tries the official Android TV play service first (where play sessions are initiated),
+    and falls back to the web playback endpoint. Cleanup is intentionally idempotent:
+    an expired or already-removed playback session is considered successfully cleaned up.
     """
     clean_content_id = str(content_id or "").strip()
     clean_token = str(video_token or "").strip()
     if not clean_content_id or not clean_token:
         return False
 
-    url = (
-        "https://www.crunchyroll.com/playback/v1/token/"
-        f"{quote(clean_content_id, safe='')}/{quote(clean_token, safe='')}"
-    )
+    q_cid = quote(clean_content_id, safe="")
+    q_tok = quote(clean_token, safe="")
+
+    # 1. Try Android TV play service endpoint
+    tv_headers = {
+        "Accept": "*/*",
+        "User-Agent": "Crunchyroll/ANDROIDTV/3.70.0_22358 (Android 12; en-US; SHIELD Android TV Build/SR1A.220624.014)",
+    }
+    raw_android_token = getattr(client, "android_token", None)
+    token = raw_android_token or getattr(client, "token", None)
+    if token:
+        tv_headers["Authorization"] = f"Bearer {str(token).strip()}"
+
+    tv_url = f"https://cr-play-service.prd.crunchyrollsvc.com/v1/token/{q_cid}/{q_tok}"
+    try:
+        resp = client.do_request("DELETE", tv_url, headers=tv_headers)
+        if 200 <= resp.status_code < 300 or resp.status_code in {401, 404, 410}:
+            return True
+    except Exception:
+        pass
+
+    # 2. Fallback to web playback endpoint
+    web_url = f"https://www.crunchyroll.com/playback/v1/token/{q_cid}/{q_tok}"
     headers = {"Accept": "*/*"}
     try:
-        resp = client.do_request("DELETE", url, headers=headers)
+        resp = client.do_request("DELETE", web_url, headers=headers)
+        return 200 <= resp.status_code < 300 or resp.status_code in {401, 404, 410}
     except Exception:
-        # Stream cleanup must never hide the original download failure.
         return False
 
-    return 200 <= resp.status_code < 300 or resp.status_code in {401, 404, 410}
+
+def purge_orphan_streams(
+    client: CrunchyrollHttpClient,
+    device_id: Optional[str] = None,
+    all_devices: bool = False,
+) -> int:
+    """Query and delete dangling playback sessions on Crunchyroll's servers.
+
+    Prevents accounts from hitting concurrent playback limits (KAT-3002) caused
+    by crashed processes, unhandled interrupts, or leaked subtitle queries.
+    By default, only deletes sessions created by this client's deviceId to avoid
+    interrupting other active streams on the same account.
+    """
+    from .auth import get_device_id
+
+    target_device_id = device_id or getattr(client, "device_id", None)
+    if not target_device_id:
+        try:
+            target_device_id = get_device_id()
+        except Exception:
+            target_device_id = ""
+
+    headers = {
+        "Accept": "*/*",
+        "User-Agent": "Crunchyroll/ANDROIDTV/3.70.0_22358 (Android 12; en-US; SHIELD Android TV Build/SR1A.220624.014)",
+    }
+    raw_android_token = getattr(client, "android_token", None)
+    token = raw_android_token or getattr(client, "token", None)
+    if token:
+        headers["Authorization"] = f"Bearer {str(token).strip()}"
+
+    url = "https://cr-play-service.prd.crunchyrollsvc.com/v1/sessions/streaming"
+    try:
+        resp = client.do_request("GET", url, headers=headers)
+        if resp.status_code == 401:
+            client.refresh_token()
+            token = getattr(client, "android_token", None) or getattr(client, "token", None)
+            if token:
+                headers["Authorization"] = f"Bearer {str(token).strip()}"
+            resp = client.do_request("GET", url, headers=headers)
+
+        if resp.status_code != 200:
+            return 0
+
+        data = resp.json()
+        items = data.get("items", []) if isinstance(data, dict) else []
+        deleted_count = 0
+
+        for item in items:
+            if item.get("isDeleted"):
+                continue
+            item_did = item.get("deviceId", "")
+            if not all_devices and target_device_id and item_did != target_device_id:
+                continue
+
+            cid = item.get("contentId")
+            tok = item.get("token")
+            if cid and tok:
+                if delete_stream(client, cid, tok):
+                    deleted_count += 1
+
+        if deleted_count > 0:
+            print(f"[sessions] Purged {deleted_count} orphaned streaming session(s) from Crunchyroll.", flush=True)
+        return deleted_count
+    except Exception as exc:
+        print(f"[sessions] Warning: Failed to query/purge active sessions: {exc}", flush=True)
+        return 0
+

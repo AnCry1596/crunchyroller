@@ -47,7 +47,13 @@ if sys.platform == "win32":
 sys.stdout = SafeStream(sys.stdout)
 sys.stderr = SafeStream(sys.stderr)
 
-from crunchyroll.api import get_episode_info, get_season_episodes, get_series, parse_url_type
+from crunchyroll.api import (
+    get_episode_info,
+    get_season_episodes,
+    get_series,
+    parse_url_type,
+    purge_orphan_streams,
+)
 from crunchyroll.auth import load_config, save_config
 from crunchyroll.downloader import download_episode
 from crunchyroll.http_client import CrunchyrollHttpClient
@@ -443,6 +449,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"success": removed})
             return
 
+        elif path == "/api/sessions/purge":
+            try:
+                client = CrunchyrollHttpClient()
+                purged = purge_orphan_streams(client)
+                _log(f"purged {purged} zombie session(s)")
+                self._json({"success": True, "purged": purged})
+            except Exception as e:
+                self._json({"success": False, "error": str(e)}, status=500)
+            return
+
         elif path == "/api/queue/clear":
             cleared = QUEUE.clear()
             self._json({"success": True, "cleared": cleared})
@@ -714,6 +730,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/queue/clear":
             cleared = QUEUE.clear()
             self._json({"success": True, "cleared": cleared})
+
+        elif path == "/api/sessions/purge":
+            try:
+                client = CrunchyrollHttpClient()
+                purged = purge_orphan_streams(client)
+                _log(f"purged {purged} zombie session(s)")
+                self._json({"success": True, "purged": purged})
+            except Exception as e:
+                self._json({"success": False, "error": str(e)}, status=500)
 
         elif path.startswith("/api/"):
             self._json({"success": False, "error": f"Endpoint not found: {path}. If you recently updated, please restart web_gui.py."}, 404)

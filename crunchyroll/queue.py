@@ -12,7 +12,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 import uuid
 
-from .api import get_episode_info
+from .api import get_episode_info, purge_orphan_streams
 from .downloader import download_episode
 from .http_client import CrunchyrollHttpClient
 from .session_pool import ConcurrencyConfig
@@ -616,6 +616,12 @@ class DownloadQueue:
                     return
 
                 needs_cooldown = not first_item and not self.cancel_all_flag
+            if first_item:
+                try:
+                    purge_client = self.client_factory()
+                    purge_orphan_streams(purge_client)
+                except Exception as ex:
+                    self.log(f"session preflight: {ex}")
             first_item = False
 
             # Jittered cooldown between consecutive items in batch
