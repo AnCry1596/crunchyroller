@@ -20,6 +20,26 @@ from urllib3.util.retry import Retry
 logger = logging.getLogger("crunchyroll.session_pool")
 
 
+def sleep_interruptible(
+    seconds: float,
+    cancel_event: Optional[threading.Event] = None,
+    tick: float = 0.5,
+) -> None:
+    """Sleep `seconds`, waking every `tick` to honor `cancel_event`.
+
+    Raises InterruptedError promptly when cancellation is requested instead
+    of blocking for the full (potentially multi-minute) rate-limit wait.
+    """
+    deadline = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("Download cancelled by user")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, tick))
+
+
 class RateLimitGate:
     """Global coordination gate across all threads and clients for rate-limit cooldowns."""
     _lock = threading.Lock()
@@ -61,7 +81,7 @@ class ConcurrencyConfig:
     max_workers: int = 16
     initial_workers: int = 16
     aimd_enabled: bool = True
-    hedging_enabled: bool = False  # disabled: hedge timeout math kills downloads on slow CDN segments
+    hedging_enabled: bool = False  # Hedging disabled to prevent speculative duplicate requests on high-latency segments
     hedge_factor: float = 2.0  # multiplier of median latency to trigger hedge
     hedge_min_delay: float = 1.5  # minimum delay in seconds before hedging
     max_retries: int = 5
@@ -365,7 +385,7 @@ class SessionPool:
                             wait_time,
                         )
                         if attempt < self.max_retries - 1:
-                            time.sleep(wait_time)
+                            sleep_interruptible(wait_time, cancel_event)
                     elif 400 <= resp.status_code < 500:
                         self.scaler.record_failure(resp.status_code)
                         raise RuntimeError(
@@ -381,10 +401,17 @@ class SessionPool:
                             self.max_retries,
                         )
                         if attempt < self.max_retries - 1:
-                            time.sleep(min(1.0, self.backoff_factor * max(1, attempt_number)))
+                            sleep_interruptible(
+                                min(1.0, self.backoff_factor * max(1, attempt_number)),
+                                cancel_event,
+                            )
             except RuntimeError:
                 # Preserve non-retryable HTTP errors instead of retrying and
                 # replacing the useful status with a generic final exception.
+                raise
+            except InterruptedError:
+                # Cancellation must propagate immediately, not be retried or
+                # reported as a generic final failure.
                 raise
             except Exception as e:
                 last_exception = e
@@ -400,7 +427,10 @@ class SessionPool:
                     e,
                 )
                 if attempt < self.max_retries - 1:
-                    time.sleep(min(1.0, self.backoff_factor * max(1, attempt_number)))
+                    sleep_interruptible(
+                        min(1.0, self.backoff_factor * max(1, attempt_number)),
+                        cancel_event,
+                    )
 
             attempt += 1
 
@@ -513,7 +543,7 @@ class SessionPool:
                         wait_time = self._rate_limit_wait(resp, attempt + 1)
                         RateLimitGate.trip(wait_time)
                         if attempt < self.max_retries - 1:
-                            time.sleep(wait_time)
+                            sleep_interruptible(wait_time, cancel_event)
                             continue
                         resp.raise_for_status()
 
@@ -572,6 +602,10 @@ class SessionPool:
                 # Preserve useful non-retryable client errors, matching the
                 # behavior of download_segment().
                 raise
+            except InterruptedError:
+                # Cancellation must propagate immediately, not be retried or
+                # reported as a generic final failure.
+                raise
             except Exception as exc:
                 last_exception = exc
                 self.scaler.record_failure(0)
@@ -584,7 +618,10 @@ class SessionPool:
                     exc,
                 )
                 if attempt < self.max_retries - 1:
-                    time.sleep(self.backoff_factor * max(1, attempt + 1))
+                    sleep_interruptible(
+                        self.backoff_factor * max(1, attempt + 1),
+                        cancel_event,
+                    )
 
         raise RuntimeError(
             f"Failed to download complete media file after {self.max_retries} attempts: "
@@ -669,7 +706,7 @@ class SessionPool:
                             wait_time = self._rate_limit_wait(response, attempt + 1)
                             RateLimitGate.trip(wait_time)
                             if attempt < range_retries - 1:
-                                time.sleep(wait_time)
+                                sleep_interruptible(wait_time, cancel_event)
                             continue
                         if response.status_code != 206:
                             raise RuntimeError(
@@ -691,10 +728,17 @@ class SessionPool:
                             len(data) / range_elapsed / (1024 * 1024),
                         )
                         return start, data
+                except InterruptedError:
+                    # Cancellation must propagate immediately, not be retried or
+                    # reported as a generic final failure.
+                    raise
                 except Exception as exc:
                     last_error = exc
                     if attempt < range_retries - 1:
-                        time.sleep(self.backoff_factor * max(1, attempt + 1))
+                        sleep_interruptible(
+                            self.backoff_factor * max(1, attempt + 1),
+                            cancel_event,
+                        )
             raise RuntimeError(
                 f"Failed byte range {start}-{end} after {range_retries} attempts: {last_error}"
             )

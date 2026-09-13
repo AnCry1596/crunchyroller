@@ -4,7 +4,7 @@ import requests
 from typing import Optional
 from urllib.parse import urlparse
 from .auth import get_access_token, login_with_credentials, load_config, save_config
-from .session_pool import SessionPool, ConcurrencyConfig, RateLimitGate
+from .session_pool import SessionPool, ConcurrencyConfig, RateLimitGate, sleep_interruptible
 
 
 class CrunchyrollHttpClient:
@@ -104,8 +104,22 @@ class CrunchyrollHttpClient:
         # Cap each sleep while retaining the increasing flood-wait signal.
         return min(scheduled_wait, self.MAX_RATE_LIMIT_WAIT)
 
-    def do_request(self, method: str, url: str, **kwargs) -> requests.Response:
+    def do_request(
+        self,
+        method: str,
+        url: str,
+        cancel_event: Optional[threading.Event] = None,
+        **kwargs,
+    ) -> requests.Response:
         RateLimitGate.wait_if_blocked()
+        # Tolerate callers forwarding cancel_event inside kwargs (e.g. pooled
+        # helpers) so it never leaks into requests' session.request().
+        if cancel_event is None:
+            maybe_event = kwargs.pop("cancel_event", None)
+            if isinstance(maybe_event, threading.Event):
+                cancel_event = maybe_event
+        else:
+            kwargs.pop("cancel_event", None)
         headers = kwargs.pop("headers", {})
         requested_timeout = kwargs.pop("timeout", self.DEFAULT_REQUEST_TIMEOUT)
         try:
@@ -202,7 +216,7 @@ class CrunchyrollHttpClient:
                 f"({retries}/{self.MAX_RATE_LIMIT_RETRIES}).{header_note}",
                 flush=True,
             )
-            time.sleep(wait_time)
+            sleep_interruptible(wait_time, cancel_event)
             RateLimitGate.wait_if_blocked()
             retry_started = time.monotonic()
             response = self.session.request(method, url, headers=headers, **kwargs)

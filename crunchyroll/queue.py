@@ -211,6 +211,19 @@ class DownloadQueue:
             if len(self.log_messages) > 200:
                 self.log_messages.pop(0)
 
+    @staticmethod
+    def _close_client(client) -> None:
+        """Best-effort close of a per-job HTTP client, freeing its session pool."""
+        if client is None:
+            return
+        close_fn = getattr(client, "close", None)
+        if not callable(close_fn):
+            return
+        try:
+            close_fn()
+        except Exception:
+            pass
+
     @property
     def queued_count(self) -> int:
         with self.lock:
@@ -617,12 +630,15 @@ class DownloadQueue:
 
                 needs_cooldown = not first_item and not self.cancel_all_flag
             if first_item:
+                purge_client = None
                 try:
                     purge_client = self.client_factory()
                     purge_orphan_streams(purge_client)
                 except Exception as ex:
                     self.log(f"session preflight: {ex}")
-            first_item = False
+                finally:
+                    self._close_client(purge_client)
+                first_item = False
 
             # Jittered cooldown between consecutive items in batch
             # Runs while active_job is None so cancel_current() cannot accidentally cancel next job during cooldown!
@@ -653,6 +669,7 @@ class DownloadQueue:
 
             self.log(f"[{self.completed_batch_count + 1}/{self.total_batch_count}] {job.label} [{job.video_quality}/{job.audio_quality}]")
 
+            client = None
             try:
                 if self.cancel_all_flag or job.status == "canceled":
                     raise InterruptedError("Episode cancelled")
@@ -751,6 +768,7 @@ class DownloadQueue:
                             self.history.pop(0)
                     self.log(f"failed: {job.label} — {e}")
             finally:
+                self._close_client(client)
                 with self.lock:
                     self.active_job = None
                     if not self.cancel_all_flag:
