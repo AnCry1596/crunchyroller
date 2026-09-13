@@ -2,7 +2,7 @@
 
 # Crunchyroller — Crunchyroll Downloader
 
-**A fast Crunchyroll anime downloader with a modern GUI and CLI to download Crunchyroll videos with multi-audio, soft subtitles, unthrottled speeds, and Widevine DRM decryption into MKV.**
+**A fast, modern Crunchyroll downloader with a sleek Web GUI and CLI. Download Crunchyroll anime episodes, full seasons, and series with multi-track audio, soft subtitles, unthrottled speeds, and automated Widevine DRM decryption into MKV.**
 
 [![Release](https://img.shields.io/github/v/release/Vure-sh/crunchyroller?color=black&style=for-the-badge)](https://github.com/Vure-sh/crunchyroller/releases/latest)
 [![Stars](https://img.shields.io/github/stars/Vure-sh/crunchyroller?color=ffd700&style=for-the-badge)](https://github.com/Vure-sh/crunchyroller/stargazers)
@@ -27,17 +27,15 @@ Downloads automatically sort into standard `Series/Season 01/Series - S01E01 - T
 
 ## Features
 
+- **Download Queue & Batch Manager:** Queue up multiple episodes, full seasons, or series in the web GUI with live progress meters and a sliding queue drawer.
+- **Pause, Resume & Cancel:** Pause and resume active downloads with dynamic rolling speed calculation, or cancel individual episodes on the fly without interrupting the rest of your queue.
 - **Plex & Jellyfin Ready:** Automatically creates `Season XX` subfolders with standard scene naming (`Series - S01E01 - Title.mkv`), ensuring 100% instant metadata and poster matching in home media servers.
-- **Thread-Safe FIFO Download Queue:** Queue multiple episodes, seasons, or series simultaneously. Monitor and control download jobs in real time with the built-in sliding queue drawer.
-- **Anime Task Grouping & Progress Meter:** Clean accordion UI grouping episode tasks by anime title, with an animated circular progress ring tracking overall series completion.
-- **Pause, Resume & Granular Cancellation:** Pause and resume active downloads with accurate rolling speed calculations, or cancel specific individual episodes without interrupting the rest of the queue.
-- **Uncapped Download Speeds:** Downloads aren't throttled — maxes out whatever your internet connection can handle (can reach 60–70+ MB/s on fast connections).
+- **Uncapped Download Speeds:** Downloads aren't throttled at all — it maxes out whatever your internet connection can handle (can reach 60–70+ MB/s on fast connections).
+- **Multiple Audio Dubs & Soft Subtitles:** Pick Japanese, English, or download all available dubs and subs in one go (with full English CC support) muxed cleanly into a single MKV.
 - **Clean Desktop GUI & CLI:** Run it as a sleek desktop app, in your web browser, or straight from the command line.
-- **Multiple Audio Dubs & Soft Subtitles:** Pick Japanese, English, or download all available dubs and subs in one go, muxed cleanly into a single MKV with full support for English CC without locale collision.
-- **Permanent Stream Limit Protection:** Proactive auto-purging of orphaned stream playback sessions and dual-endpoint cleanup preventing 420/429 rate limits and `KAT-3002` stream lockout errors.
-- **Automated Widevine DRM Decryption:** Handles CENC decryption automatically once you provide your CDM keys (`.wvd` or `client_id.bin` + `private_key.pem`) with hardened MP4 box parsing.
+- **Automated Widevine DRM Decryption:** Handles CENC decryption automatically once you provide your CDM keys (`.wvd` or `client_id.bin` + `private_key.pem`).
 - **Easy Login:** Sign in directly with your email/password, your web browser session, or by pasting an `etp_rt` cookie.
-- **Batch Anime Downloader:** Queue up an entire season, whole series, or a text file of URLs.
+- **Smart Session Pacing:** Automatic session cleanup and cooldown delays to prevent playback lockouts or rate limits.
 
 ---
 
@@ -152,6 +150,22 @@ Run `python main.py --help` to see all available flags.
 
 ---
 
+## FAQ
+
+**Can I download full seasons or batch download?**  
+Yes! You can paste a series link to queue up entire seasons directly in the Web UI, or pass a text file of URLs via the CLI (`--file urls.txt`).
+
+**Does it download in 1080p?**  
+Yes, it fetches the highest available stream quality (up to 1080p source) by default, or you can pick 720p/480p if you want smaller file sizes.
+
+**Can I download multiple audio dubs and subtitles together?**  
+Yes. You can select specific dubs and subs (e.g. Japanese + English audio and English subtitles) or choose "all" to bundle everything into a single `.mkv` with proper language tags.
+
+**Why do I need Widevine CDM keys?**  
+Crunchyroll streams are encrypted with Widevine DRM. Providing your own CDM files lets the app decrypt the video and audio streams directly on your machine.
+
+---
+
 ## Star the Repo
 
 If Crunchyroller helped you out, consider dropping a star on GitHub! It really helps more people discover the project.
@@ -161,7 +175,3 @@ If Crunchyroller helped you out, consider dropping a star on GitHub! It really h
 ## Disclaimer
 
 This project is intended for personal backups and educational use only. Please support the official creators and license holders by keeping an active Crunchyroll subscription.
-
----
-
-<sub>Keywords: crunchyroll downloader, crunchyroll anime downloader, download crunchyroll anime, crunchyroll video downloader, crunchyroll widevine, crunchyroll gui, crunchyroll cli, crunchyroll batch download, crunchyroll mkv, kat-3002 fix</sub>
