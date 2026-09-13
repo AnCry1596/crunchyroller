@@ -61,6 +61,7 @@ class DownloadState:
         self.start_time = 0.0
         self.cancel_flag = False
         self.queue: deque = deque()  # list of dicts with episode info & channel_id
+        self.worker_thread = None  # current _worker_loop thread, if any
         self.log: list = []
 
     def _log(self, msg: str):
@@ -254,10 +255,14 @@ def _worker_loop(etp_rt: str):
                 STATE.queue.clear()
                 STATE.status = "idle"
                 STATE.cancel_flag = False
+                if STATE.worker_thread is threading.current_thread():
+                    STATE.worker_thread = None
                 return
 
             if not STATE.queue:
                 STATE.status = "idle"
+                if STATE.worker_thread is threading.current_thread():
+                    STATE.worker_thread = None
                 if total_batch > 1 and last_channel_id:
                     notify_discord(
                         last_channel_id,
@@ -350,11 +355,18 @@ def enqueue_episodes(items: List[dict], etp_rt: str):
     with STATE.lock:
         for item in items:
             STATE.queue.append(item)
-        already_running = STATE.status == "running"
 
-    if not already_running:
-        t = threading.Thread(target=_worker_loop, args=(etp_rt,), daemon=True)
-        t.start()
+        worker = STATE.worker_thread
+        worker_alive = worker is not None and worker.is_alive()
+
+        # Start a worker only when no live worker exists. Checking the thread
+        # handle (rather than STATE.status) prevents a second worker from racing
+        # on STATE.queue during the window where a finishing worker has set its
+        # status to "completed"/"failed" but has not yet returned.
+        if not worker_alive:
+            t = threading.Thread(target=_worker_loop, args=(etp_rt,), daemon=True)
+            STATE.worker_thread = t
+            t.start()
 
 
 # ── range parser helper ──────────────────────────────────────────────────────

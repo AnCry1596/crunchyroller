@@ -100,7 +100,7 @@ def get_license(
                 keys[kid_bytes] = key_bytes
 
         if not keys:
-            # whatever, just grab all the keys
+            # Fallback: include all available keys if no specific content keys matched
             for k in cdm.get_keys(session_id):
                 kid_bytes = _key_bytes(k.kid)
                 key_bytes = _key_bytes(k.key)

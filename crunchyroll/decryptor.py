@@ -25,6 +25,10 @@ logger = logging.getLogger("crunchyroll.decryptor")
 
 BUFFER_SIZE = 4 * 1024 * 1024  # 4 MB fixed streaming chunk size
 
+# UUID of the PIFF/PlayReady sample-encryption extended box ("uuid" variant of "senc").
+# Arbitrary "uuid" boxes (user data, PSSH, ...) must NOT be parsed as sample encryption.
+_PIFF_SENC_UUID = bytes.fromhex("a2394f525a9b4f14a2446c427c648df4")
+
 
 def _read_u32(buf: Union[bytes, bytearray], pos: int) -> int:
     if pos + 4 > len(buf):
@@ -42,14 +46,41 @@ def _write_u32(buf: bytearray, pos: int, val: int) -> None:
     buf[pos : pos + 4] = struct.pack(">I", val)
 
 
+# Box tags proving a stream is CENC-encrypted. Clear trailers contain none of these.
+_CENC_MARKERS = (b"encv", b"enca", b"senc", b"tenc", b"pssh", b"sinf")
+# Upper bound of the head-of-file scan for CENC markers (moov/init live at the front).
+_CENC_SCAN_LIMIT = 16 * 1024 * 1024
+
+
+def _contains_cenc_boxes(path: str) -> bool:
+    """Return True if the head of `path` contains CENC encryption boxes."""
+    overlap = max(len(m) for m in _CENC_MARKERS) - 1
+    scanned = 0
+    tail = b""
+    with open(path, "rb") as f:
+        while scanned < _CENC_SCAN_LIMIT:
+            chunk = f.read(BUFFER_SIZE)
+            if not chunk:
+                break
+            scanned += len(chunk)
+            window = tail + chunk
+            if any(marker in window for marker in _CENC_MARKERS):
+                return True
+            tail = window[-overlap:] if overlap > 0 else b""
+    return False
+
+
 def _copy_stream_chunks(src_f, dst_f, num_bytes: int, chunk_size: int = BUFFER_SIZE) -> None:
     """Stream copy a fixed number of bytes between file objects using bounded chunks."""
     remaining = num_bytes
     while remaining > 0:
         to_read = min(remaining, chunk_size)
         chunk = src_f.read(to_read)
-        if not chunk:
-            break
+        if not chunk and remaining > 0:
+            raise EOFError(
+                f"Unexpected EOF: expected {num_bytes} bytes, "
+                f"read {num_bytes - remaining} bytes"
+            )
         dst_f.write(chunk)
         remaining -= len(chunk)
 
@@ -147,6 +178,8 @@ def _parse_moof_box(moof_bytes: bytes) -> Tuple[List[bytes], List[List[Tuple[int
     default_sample_size = 0
     trun_data_offset: Optional[int] = None
     subsample_flag = False
+    traf_seen = False
+    extra_traf_warned = False
 
     cur = 8  # skip moof header
     while cur + 8 <= buf_len:
@@ -156,6 +189,16 @@ def _parse_moof_box(moof_bytes: bytes) -> Tuple[List[bytes], List[List[Tuple[int
         b_type = bytes(buf[cur + 4 : cur + 8])
 
         if b_type == b"traf":
+            if traf_seen:
+                if not extra_traf_warned:
+                    logger.warning(
+                        "Additional 'traf' box in 'moof' ignored; streaming decryptor "
+                        "currently processes first track only"
+                    )
+                    extra_traf_warned = True
+                cur += b_size
+                continue
+            traf_seen = True
             t_cur = cur + 8
             t_end = min(cur + b_size, buf_len)
             while t_cur + 8 <= t_end:
@@ -199,11 +242,21 @@ def _parse_moof_box(moof_bytes: bytes) -> Tuple[List[bytes], List[List[Tuple[int
                             p_tr += 4  # sample_composition_time_offset
                         sample_sizes.append(s_size)
 
-                elif tb_type in (b"senc", b"uuid"):
-                    senc_flags = (buf[t_cur + 9] << 16) | (buf[t_cur + 10] << 8) | buf[t_cur + 11]
+                elif tb_type == b"senc" or tb_type == b"uuid":
+                    # "uuid" boxes carry a 16-byte extended type before the
+                    # version/flags; only the PIFF sample-encryption UUID is
+                    # a valid "senc" equivalent. Anything else (PSSH, user
+                    # data, ...) is skipped, not parsed as IVs.
+                    senc_base = t_cur + 8
+                    if tb_type == b"uuid":
+                        if tb_size < 24 or bytes(buf[t_cur + 8 : t_cur + 24]) != _PIFF_SENC_UUID:
+                            t_cur += tb_size
+                            continue
+                        senc_base = t_cur + 24
+                    senc_flags = (buf[senc_base + 1] << 16) | (buf[senc_base + 2] << 8) | buf[senc_base + 3]
                     subsample_flag = bool(senc_flags & 0x000002)
-                    senc_count = _read_u32(buf, t_cur + 12)
-                    p_senc = t_cur + 16
+                    senc_count = _read_u32(buf, senc_base + 4)
+                    p_senc = senc_base + 8
                     for _ in range(senc_count):
                         if p_senc + 8 > t_end:
                             break
@@ -226,7 +279,6 @@ def _parse_moof_box(moof_bytes: bytes) -> Tuple[List[bytes], List[List[Tuple[int
                         subsamples_list.append(subs)
 
                 t_cur += tb_size
-            break
         cur += b_size
 
     return sample_ivs, subsamples_list, sample_sizes, trun_data_offset
@@ -269,6 +321,12 @@ def decrypt_cenc_streaming(
             elif box_size == 0:
                 box_size = file_size - (src_f.tell() - hdr_size)
 
+            if box_size < hdr_size:
+                raise ValueError(
+                    f"Malformed MP4: box {box_type!r} declares size {box_size} "
+                    f"smaller than its {hdr_size}-byte header"
+                )
+
             payload_size = box_size - hdr_size
 
             if box_type == b"moov":
@@ -292,6 +350,16 @@ def decrypt_cenc_streaming(
                 dst_f.write(header)
 
                 if pending_ivs and key:
+                    if len(pending_sizes) < len(pending_ivs) and not any(pending_subs):
+                        raise ValueError(
+                            f"Malformed MP4: sample size count ({len(pending_sizes)}) "
+                            f"does not match IV count ({len(pending_ivs)})"
+                        )
+                    if any(pending_subs) and len(pending_subs) < len(pending_ivs):
+                        raise ValueError(
+                            f"Malformed MP4: subsample map count ({len(pending_subs)}) "
+                            f"does not match IV count ({len(pending_ivs)})"
+                        )
                     total_written = 0
                     for idx, iv in enumerate(pending_ivs):
                         iv_full = iv + b"\x00" * (16 - len(iv))
@@ -372,11 +440,25 @@ def decrypt_stream(
     if not os.path.exists(input_file):
         raise FileNotFoundError(f"Input file not found: {input_file}")
 
-    # If no keys or clear stream, stream-copy directly
+    # Empty keys are only valid for genuinely clear streams (e.g. trailers).
+    # Copying CENC ciphertext as if it were clear produces an unplayable file
+    # with no error, so refuse loudly when encryption boxes are present.
     if not keys:
+        if _contains_cenc_boxes(input_file):
+            raise ValueError(
+                "No decryption keys supplied but input contains CENC encryption "
+                "(encv/enca/senc/tenc/pssh); refusing to copy ciphertext as clear."
+            )
         with open(input_file, "rb") as src_f, open(output_file, "wb") as dst_f:
             _copy_stream_chunks(src_f, dst_f, os.path.getsize(input_file))
         return output_file
+
+    if len(keys) > 1:
+        logger.warning(
+            "Multiple decryption keys supplied (%d); only the first will be used. "
+            "Key-rotation streams may decrypt incorrectly.",
+            len(keys),
+        )
 
     key_bytes = next(iter(keys.values()))
     key_hex = key_bytes.hex()
