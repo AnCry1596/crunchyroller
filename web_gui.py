@@ -51,6 +51,7 @@ from crunchyroll.api import get_episode_info, get_season_episodes, get_series, p
 from crunchyroll.auth import load_config, save_config
 from crunchyroll.downloader import download_episode
 from crunchyroll.http_client import CrunchyrollHttpClient
+from crunchyroll.queue import DownloadQueue
 from crunchyroll.session_pool import ConcurrencyConfig
 
 # root folder for static web assets
@@ -84,6 +85,8 @@ STATE = {
         "overall_pct": 0.0,
         "track_pct":   0.0,
         "log":         [],
+        "queue":       [],
+        "queued_count": 0,
     },
 }
 LOCK = threading.RLock()
@@ -91,6 +94,14 @@ DOWNLOAD_PAUSE_EVENT = threading.Event()
 DOWNLOAD_PAUSE_EVENT.set()
 DOWNLOAD_CANCEL_EVENT = threading.Event()
 DOWNLOAD_CANCEL_EVENT.clear()
+
+QUEUE = DownloadQueue(
+    client_factory=lambda: CrunchyrollHttpClient(),
+    pause_event=DOWNLOAD_PAUSE_EVENT,
+    cancel_event=DOWNLOAD_CANCEL_EVENT,
+    lock=LOCK,
+    cooldown_range=(1.5, 3.0),
+)
 
 
 def get_auth_type() -> str:
@@ -310,20 +321,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
 
         if path == "/api/state":
             auth_type = get_auth_type()
             with LOCK:
+                q_state = QUEUE.get_state()
+                if QUEUE.active_job or len(QUEUE.queue) > 0 or QUEUE.completed_batch_count > 0:
+                    STATE["download"].update({
+                        "status": q_state["status"],
+                        "episode": q_state["episode"],
+                        "track": q_state["track"],
+                        "segs_done": q_state["segs_done"],
+                        "segs_total": q_state["segs_total"],
+                        "speed": q_state["speed"],
+                        "overall_pct": q_state["overall_pct"],
+                        "track_pct": q_state["track_pct"],
+                        "ep_idx": q_state["ep_idx"],
+                        "ep_total": q_state["ep_total"],
+                        "complete_file": q_state["complete_file"],
+                    })
+                STATE["download"]["queue"] = q_state["queue"]
+                STATE["download"]["queued_count"] = q_state["queued_count"]
+                STATE["download"]["active_job"] = q_state["active_job"]
+                STATE["download"]["history"] = q_state["history"]
+
                 self._json({
                     "authenticated": auth_type != "none",
                     "auth_type": auth_type,
                     "config": STATE["config"],
                     "download": STATE["download"],
+                    "queue": q_state["queue"],
                 })
             return
 
         elif path == "/api/download/pause":
+            QUEUE.pause()
             DOWNLOAD_PAUSE_EVENT.clear()
             with LOCK:
                 if STATE["download"]["status"] == "running":
@@ -334,6 +368,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         elif path == "/api/download/resume":
+            QUEUE.resume()
             DOWNLOAD_PAUSE_EVENT.set()
             with LOCK:
                 if STATE["download"]["status"] == "paused":
@@ -342,7 +377,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"success": True, "status": "running"})
             return
 
+        elif path == "/api/download/skip":
+            QUEUE.cancel_current()
+            _log("active episode skipped by user")
+            self._json({"success": True, "status": "skipped"})
+            return
+
         elif path == "/api/download/cancel":
+            QUEUE.cancel_all()
             DOWNLOAD_CANCEL_EVENT.set()
             DOWNLOAD_PAUSE_EVENT.set()
             with LOCK:
@@ -350,6 +392,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 STATE["download"]["speed"] = ""
             _log("download cancelled by user")
             self._json({"success": True, "status": "canceled"})
+            return
+
+        elif path == "/api/queue":
+            self._json({
+                "success": True,
+                "queue": QUEUE.get_queue_list(),
+                "active": QUEUE.get_active_job(),
+            })
+            return
+
+        elif path == "/api/queue/remove":
+            from urllib.parse import parse_qs
+            qs = parse_qs(parsed_url.query)
+            job_id = qs.get("id", [""])[0].strip()
+            removed = QUEUE.remove(job_id)
+            self._json({"success": removed})
+            return
+
+        elif path == "/api/queue/clear":
+            cleared = QUEUE.clear()
+            self._json({"success": True, "cleared": cleared})
             return
 
         elif path.startswith("/api/"):
@@ -510,25 +573,38 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._json({"success":False,"error":str(e)},500)
 
         elif path == "/api/download":
-            if STATE["download"]["status"] in ("running", "paused"):
-                self._json({"success":False,"error":"already downloading"},400); return
             if not is_authenticated():
-                self._json({"success":False,"error":"not logged in"},401); return
-            items = data.get("items",[])
+                self._json({"success": False, "error": "not logged in"}, 401)
+                return
+            items = data.get("items", [])
             if not items:
-                self._json({"success":False,"error":"select some episodes"},400); return
+                self._json({"success": False, "error": "select some episodes"}, 400)
+                return
             c = STATE["config"]
-            threading.Thread(target=_run_download, daemon=True, args=(
-                items,
-                data.get("video_quality", c["video_quality"]),
-                data.get("audio_quality", c["audio_quality"]),
-                data.get("audio_lang", c["audio_lang"]),
-                data.get("subs_lang", c["subs_lang"]),
-                bool(data.get("force_download", c.get("force_download", False))),
-            )).start()
-            self._json({"success": True})
+            vq = data.get("video_quality", c["video_quality"])
+            aq = data.get("audio_quality", c["audio_quality"])
+            al = data.get("audio_lang", c["audio_lang"])
+            sl = data.get("subs_lang", c["subs_lang"])
+            fd = bool(data.get("force_download", c.get("force_download", False)))
+
+            enqueued = QUEUE.enqueue_batch(items, {
+                "video_quality": vq,
+                "audio_quality": aq,
+                "audio_lang": al,
+                "subs_lang": sl,
+                "force_download": fd,
+            })
+            with LOCK:
+                STATE["download"]["status"] = "running"
+            self._json({
+                "success": True,
+                "enqueued_count": len(enqueued),
+                "queued_total": QUEUE.queued_count,
+                "message": f"Added {len(enqueued)} episode(s) to queue",
+            })
 
         elif path == "/api/download/pause":
+            QUEUE.pause()
             DOWNLOAD_PAUSE_EVENT.clear()
             with LOCK:
                 if STATE["download"]["status"] == "running":
@@ -538,6 +614,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"success": True, "status": "paused"})
 
         elif path == "/api/download/resume":
+            QUEUE.resume()
             DOWNLOAD_PAUSE_EVENT.set()
             with LOCK:
                 if STATE["download"]["status"] == "paused":
@@ -545,7 +622,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             _log("download resumed by user")
             self._json({"success": True, "status": "running"})
 
+        elif path == "/api/download/skip":
+            QUEUE.cancel_current()
+            _log("active episode skipped by user")
+            self._json({"success": True, "status": "skipped"})
+
         elif path == "/api/download/cancel":
+            QUEUE.cancel_all()
             DOWNLOAD_CANCEL_EVENT.set()
             DOWNLOAD_PAUSE_EVENT.set()  # unblock if paused so workers exit immediately
             with LOCK:
@@ -553,6 +636,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 STATE["download"]["speed"] = ""
             _log("download cancelled by user")
             self._json({"success": True, "status": "canceled"})
+
+        elif path == "/api/queue/remove":
+            job_id = str(data.get("id", "")).strip()
+            removed = QUEUE.remove(job_id)
+            self._json({"success": removed})
+
+        elif path == "/api/queue/clear":
+            cleared = QUEUE.clear()
+            self._json({"success": True, "cleared": cleared})
 
         elif path.startswith("/api/"):
             self._json({"success": False, "error": f"Endpoint not found: {path}. If you recently updated, please restart web_gui.py."}, 404)

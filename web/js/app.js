@@ -630,6 +630,10 @@ function renderEpisodeTree(data) {
       cb.checked = true;
       cb.className = 'cb-custom epc';
       cb.dataset.id = ep.id;
+      cb.dataset.title = ep.title || '';
+      cb.dataset.epNum = ep.episode_number || '';
+      cb.dataset.snNum = ep.season_number || '';
+      cb.dataset.series = ep.series_title || '';
       cb.tabIndex = -1;
 
       const num = document.createElement('span');
@@ -709,7 +713,13 @@ function pickAll(val) {
 
 // start batch download task
 async function startDl() {
-  const selected = [...document.querySelectorAll('.epc:checked')].map(c => ({ id: c.dataset.id }));
+  const selected = [...document.querySelectorAll('.epc:checked')].map(c => ({
+    id: c.dataset.id,
+    title: c.dataset.title || '',
+    episode_number: parseInt(c.dataset.epNum) || 0,
+    season_number: parseInt(c.dataset.snNum) || 0,
+    series_title: c.dataset.series || '',
+  }));
   if (!selected.length) {
     toast('pick some episodes first', 'err');
     return;
@@ -734,7 +744,7 @@ async function startDl() {
     return;
   }
 
-  toast(selected.length + ' episode(s) starting…');
+  toast(res.message || (selected.length + ' episode(s) added to queue'));
   document.getElementById('dl-panel').style.display = 'block';
   startPolling();
 }
@@ -743,10 +753,14 @@ function startPolling() {
   if (pollTimer) return;
   pollTimer = setInterval(async () => {
     const state = await api('/api/state');
-    updateProgressPanel(state.download);
-    if (state.download.status !== 'running' && state.download.status !== 'paused') {
-      clearInterval(pollTimer);
-      pollTimer = null;
+    if (state && state.download) {
+      updateProgressPanel(state.download);
+      const isRunning = state.download.status === 'running' || state.download.status === 'paused';
+      const hasQueue = state.download.queue && state.download.queue.length > 0;
+      if (!isRunning && !hasQueue) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
     }
   }, 800);
 }
@@ -776,28 +790,68 @@ async function togglePause() {
   }
 }
 
+async function skipDl() {
+  if (!confirm('Skip current episode and proceed to next in queue?')) return;
+  const res = await api('/api/download/skip', {});
+  if (res && res.success) {
+    toast('Skipped active episode');
+    startPolling();
+  } else {
+    toast(res?.error || 'failed to skip', 'err');
+  }
+}
+
 async function cancelDl() {
-  if (!confirm('Are you sure you want to cancel the active download?')) return;
+  if (!confirm('Are you sure you want to cancel downloads and clear queue?')) return;
   const res = await api('/api/download/cancel', {});
   if (res && res.success) {
-    toast('download cancelled', 'err');
+    toast('downloads cancelled', 'err');
   } else {
     toast(res?.error || 'failed to cancel', 'err');
   }
 }
 
+async function removeFromQueue(jobId) {
+  const res = await api('/api/queue/remove', { id: jobId });
+  if (res && res.success) {
+    toast('Removed from queue');
+    const state = await api('/api/state');
+    if (state && state.download) {
+      updateProgressPanel(state.download);
+    }
+  } else {
+    toast(res?.error || 'failed to remove from queue', 'err');
+  }
+}
+
+async function clearQueue() {
+  if (!confirm('Clear all upcoming episodes from queue?')) return;
+  const res = await api('/api/queue/clear', {});
+  if (res && res.success) {
+    toast('Queue cleared (' + (res.cleared || 0) + ' items)');
+    const state = await api('/api/state');
+    if (state && state.download) {
+      updateProgressPanel(state.download);
+    }
+  } else {
+    toast(res?.error || 'failed to clear queue', 'err');
+  }
+}
+
 function updateProgressPanel(dl) {
-  if (!dl || dl.status === 'idle') return;
+  if (!dl || (dl.status === 'idle' && (!dl.queue || dl.queue.length === 0))) return;
   document.getElementById('dl-panel').style.display = 'block';
 
   const pill = document.getElementById('pill');
   const pauseBtn = document.getElementById('dl-pause-btn');
+  const skipBtn = document.getElementById('dl-skip-btn');
   const cancelBtn = document.getElementById('dl-cancel-btn');
 
   if (pauseBtn && cancelBtn) {
     if (dl.status === 'running' || dl.status === 'paused') {
       pauseBtn.style.display = 'inline-block';
       cancelBtn.style.display = 'inline-block';
+      if (skipBtn) skipBtn.style.display = 'inline-block';
       if (dl.status === 'paused') {
         pauseBtn.textContent = 'resume';
         pauseBtn.dataset.action = 'resume';
@@ -808,6 +862,7 @@ function updateProgressPanel(dl) {
     } else {
       pauseBtn.style.display = 'none';
       cancelBtn.style.display = 'none';
+      if (skipBtn) skipBtn.style.display = 'none';
     }
   }
 
@@ -870,5 +925,66 @@ function updateProgressPanel(dl) {
   if (dl.log && dl.log.length) {
     logBox.textContent = dl.log.join('\n');
     logBox.scrollTop = logBox.scrollHeight;
+  }
+
+  // Update Queue Panel
+  const qPanel = document.getElementById('queue-panel');
+  const qList = document.getElementById('queue-list');
+  const qBadge = document.getElementById('queue-badge');
+  if (qPanel && qList) {
+    const queue = dl.queue || [];
+    if (queue.length > 0) {
+      qPanel.style.display = 'block';
+      if (qBadge) qBadge.textContent = String(queue.length);
+      qList.innerHTML = '';
+      queue.forEach((item, index) => {
+        const row = document.createElement('div');
+        row.className = 'queue-item';
+
+        const num = document.createElement('span');
+        num.className = 'queue-num';
+        num.textContent = `#${index + 1}`;
+
+        const info = document.createElement('div');
+        info.className = 'queue-info';
+
+        const title = document.createElement('div');
+        title.className = 'queue-title';
+        title.textContent = item.label || item.title || item.ep_id;
+
+        const meta = document.createElement('div');
+        meta.className = 'queue-meta';
+
+        if (item.video_quality) {
+          const vqTag = document.createElement('span');
+          vqTag.className = 'queue-tag';
+          vqTag.textContent = item.video_quality;
+          meta.appendChild(vqTag);
+        }
+
+        if (item.audio_langs && item.audio_langs.length) {
+          const alTag = document.createElement('span');
+          alTag.className = 'queue-tag';
+          alTag.textContent = item.audio_langs.join(', ');
+          meta.appendChild(alTag);
+        }
+
+        info.append(title, meta);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'queue-remove-btn';
+        removeBtn.innerHTML = '✕';
+        removeBtn.title = 'Remove from queue';
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          removeFromQueue(item.id || item.ep_id);
+        });
+
+        row.append(num, info, removeBtn);
+        qList.appendChild(row);
+      });
+    } else {
+      qPanel.style.display = 'none';
+    }
   }
 }

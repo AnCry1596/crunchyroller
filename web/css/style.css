@@ -1152,3 +1152,156 @@ hr.div {
   background: rgba(255,255,255,0.35);
   box-shadow: none;
 }
+
+/* ── Queue Panel ── */
+#queue-panel {
+  display: none;
+}
+
+.card-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.card-label-row .card-label {
+  margin-bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.queue-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--white);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.queue-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-clear-queue {
+  font-size: 0.68rem;
+  padding: 3px 8px;
+  color: var(--dim);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.btn-clear-queue:hover {
+  color: #ff7777;
+  border-color: rgba(255, 85, 85, 0.3);
+  background: rgba(255, 85, 85, 0.06);
+}
+
+.btn-skip {
+  font-size: 0.7rem;
+  padding: 4px 10px;
+  color: #e0e0e0;
+}
+
+.btn-skip:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--white);
+}
+
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.015);
+  transition: border-color 0.15s ease, background 0.15s ease;
+  user-select: none;
+}
+
+.queue-item:hover {
+  border-color: var(--border-hover);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.queue-num {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 22px;
+  flex-shrink: 0;
+}
+
+.queue-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+
+.queue-title {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.queue-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.queue-tag {
+  font-size: 0.62rem;
+  font-weight: 500;
+  color: var(--dim);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  letter-spacing: 0.2px;
+}
+
+.queue-remove-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--dim);
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.75rem;
+  line-height: 1;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.queue-remove-btn:hover {
+  color: #ff5555;
+  background: rgba(255, 85, 85, 0.1);
+  border-color: rgba(255, 85, 85, 0.25);
+}

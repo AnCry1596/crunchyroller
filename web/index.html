@@ -6,7 +6,7 @@
   <title>crunchyroller</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=3.1">
+  <link rel="stylesheet" href="/css/style.css?v=4.0">
 </head>
 <body>
 
@@ -151,6 +151,7 @@
           <span id="dl-speed" class="dl-speed"></span>
           <div class="dl-actions">
             <button id="dl-pause-btn" class="btn-s btn-pause" onclick="togglePause()">pause</button>
+            <button id="dl-skip-btn" class="btn-s btn-skip" onclick="skipDl()" title="Skip this episode and continue next">skip</button>
             <button id="dl-cancel-btn" class="btn-s btn-cancel" onclick="cancelDl()">cancel</button>
           </div>
         </div>
@@ -172,12 +173,22 @@
         <div id="log"></div>
       </div>
 
+      <div class="card" id="queue-panel" style="display:none;">
+        <div class="card-label-row">
+          <div class="card-label">queue <span id="queue-badge" class="queue-badge">0</span></div>
+          <div class="queue-actions">
+            <button class="btn-s btn-clear-queue" onclick="clearQueue()" title="Remove all upcoming episodes">clear queue</button>
+          </div>
+        </div>
+        <div id="queue-list" class="queue-list"></div>
+      </div>
+
     </div>
 
   </main>
 
   <div id="toast"></div>
-  <script src="/js/particles.js?v=3.2"></script>
-  <script src="/js/app.js?v=3.2"></script>
+  <script src="/js/particles.js?v=4.0"></script>
+  <script src="/js/app.js?v=4.0"></script>
 </body>
 </html>
