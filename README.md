@@ -28,13 +28,16 @@ Downloads automatically sort into standard `Series/Season 01/Series - S01E01 - T
 ## Features
 
 - **Plex & Jellyfin Ready:** Automatically creates `Season XX` subfolders with standard scene naming (`Series - S01E01 - Title.mkv`), ensuring 100% instant metadata and poster matching in home media servers.
-- **Uncapped download speeds:** Downloads aren't throttled at all — it maxes out whatever your internet connection can handle (can reach 60–70+ MB/s on fast connections).
+- **Thread-Safe FIFO Download Queue:** Queue multiple episodes, seasons, or series simultaneously. Monitor and control download jobs in real time with the built-in sliding queue drawer.
+- **Anime Task Grouping & Progress Meter:** Clean accordion UI grouping episode tasks by anime title, with an animated circular progress ring tracking overall series completion.
+- **Pause, Resume & Granular Cancellation:** Pause and resume active downloads with accurate rolling speed calculations, or cancel specific individual episodes without interrupting the rest of the queue.
+- **Uncapped Download Speeds:** Downloads aren't throttled — maxes out whatever your internet connection can handle (can reach 60–70+ MB/s on fast connections).
 - **Clean Desktop GUI & CLI:** Run it as a sleek desktop app, in your web browser, or straight from the command line.
-- **Multiple audio dubs & soft subtitles:** Pick Japanese, English, or download all available dubs and subs in one go, muxed cleanly into a single MKV.
-- **Anti-ban protections (experimental):** Helps avoid stream lockouts and `KAT-3002` errors with automatic session cleanup and pacing. Still experimental, so please don't spam requests.
-- **Automated Widevine DRM decryption:** Handles CENC decryption automatically once you provide your CDM keys (`.wvd` or `client_id.bin` + `private_key.pem`).
-- **Easy login:** Sign in directly with your email/password, your web browser session, or by pasting an `etp_rt` cookie.
-- **Batch anime downloader:** Queue up an entire season, whole series, or a text file of URLs.
+- **Multiple Audio Dubs & Soft Subtitles:** Pick Japanese, English, or download all available dubs and subs in one go, muxed cleanly into a single MKV with full support for English CC without locale collision.
+- **Permanent Stream Limit Protection:** Proactive auto-purging of orphaned stream playback sessions and dual-endpoint cleanup preventing 420/429 rate limits and `KAT-3002` stream lockout errors.
+- **Automated Widevine DRM Decryption:** Handles CENC decryption automatically once you provide your CDM keys (`.wvd` or `client_id.bin` + `private_key.pem`) with hardened MP4 box parsing.
+- **Easy Login:** Sign in directly with your email/password, your web browser session, or by pasting an `etp_rt` cookie.
+- **Batch Anime Downloader:** Queue up an entire season, whole series, or a text file of URLs.
 
 ---
 
