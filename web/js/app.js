@@ -395,6 +395,11 @@ function applyState(state) {
     }
     const forceDownload = document.getElementById('force-download');
     if (forceDownload) forceDownload.checked = Boolean(state.config.force_download);
+
+    const dlDirInput = document.getElementById('download-dir');
+    if (dlDirInput && state.config.download_dir !== undefined) {
+      dlDirInput.value = state.config.download_dir || '';
+    }
   }
 
   // if a download is running, start polling progress
@@ -475,12 +480,13 @@ async function loginCredentials() {
   }
 }
 
-// save quality / language dropdowns
+// save quality / language dropdowns & download directory
 async function saveCfg() {
   const vqVal = ddVideo ? ddVideo.value : (document.getElementById('vq').value || '1080p');
   const aqVal = ddAudioQual ? ddAudioQual.value : (document.getElementById('aq').value || '192k');
   const audioVal = ddAudio ? ddAudio.value : (document.getElementById('al').value || 'ja-JP');
   const subsVal = ddSubs ? ddSubs.value : (document.getElementById('sl').value || 'en-US');
+  const dlDirVal = (document.getElementById('download-dir') || {}).value || '';
 
   await api('/api/config', {
     video_quality: vqVal,
@@ -488,7 +494,37 @@ async function saveCfg() {
     audio_lang: audioVal,
     subs_lang: subsVal,
     force_download: (document.getElementById('force-download') || {}).checked || false,
+    download_dir: dlDirVal.trim(),
   });
+}
+
+// open native directory chooser
+async function browseDirectory() {
+  const btn = document.getElementById('browse-dir-btn');
+  const origText = btn ? btn.textContent : 'browse';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '...';
+  }
+  try {
+    const res = await api('/api/choose-directory', {});
+    if (res.success && res.download_dir) {
+      const input = document.getElementById('download-dir');
+      if (input) input.value = res.download_dir;
+      toast('download folder set: ' + res.download_dir, 'ok');
+    } else if (res.cancelled) {
+      // User closed or cancelled folder picker
+    } else {
+      toast(res.error || 'could not open folder picker', 'err');
+    }
+  } catch (err) {
+    toast('failed to open folder picker', 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  }
 }
 
 // fetch URL metadata & show episode tree
@@ -732,6 +768,7 @@ async function startDl() {
   const aqVal = ddAudioQual ? ddAudioQual.value : (document.getElementById('aq').value || '192k');
   const audioVal = ddAudio ? ddAudio.value : (document.getElementById('al').value || 'ja-JP');
   const subsVal = ddSubs ? ddSubs.value : (document.getElementById('sl').value || 'en-US');
+  const dlDirVal = (document.getElementById('download-dir') || {}).value || '';
 
   const res = await api('/api/download', {
     items: selected,
@@ -742,6 +779,7 @@ async function startDl() {
     audio_lang: audioVal,
     subs_lang: subsVal,
     force_download: (document.getElementById('force-download') || {}).checked || false,
+    download_dir: dlDirVal.trim(),
   });
 
   if (!res.success) {

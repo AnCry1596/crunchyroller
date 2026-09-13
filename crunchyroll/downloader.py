@@ -739,6 +739,7 @@ def download_episode(
     server_index: int = 0,
     pause_event: Optional[threading.Event] = None,
     cancel_event: Optional[threading.Event] = None,
+    download_dir: Optional[str] = None,
 ) -> str:
     """download all streams for an episode and mux to mkv using shared session pooling"""
     from .auth import load_config
@@ -759,6 +760,7 @@ def download_episode(
             server_index=server_index,
             pause_event=pause_event,
             cancel_event=cancel_event,
+            download_dir=download_dir,
         )
 
     audio_all = _is_all_tracks(audio_langs)
@@ -820,17 +822,21 @@ def download_episode(
     season_num = info.episode_metadata.season_number
     ep_num = info.episode_metadata.episode_number
 
+    if not download_dir:
+        download_dir = cfg.get("download_dir", "")
+    base_dir = os.path.abspath(os.path.expanduser(download_dir.strip())) if download_dir and download_dir.strip() else "."
+
     # Plex and Jellyfin standard layout: Series / Season XX / Series - SXXEYY - Title.mkv
     season_folder = f"Season {season_num:02d}"
-    output_dir = os.path.join(series_title, season_folder)
+    output_dir = os.path.join(base_dir, series_title, season_folder)
     os.makedirs(output_dir, exist_ok=True)
     filename = f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"
     output_filename = os.path.join(output_dir, filename)
 
     # Legacy file detection and seamless migration into Season subfolder
     legacy_candidates = [
-        os.path.join(series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
-        os.path.join(series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
+        os.path.join(base_dir, series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
+        os.path.join(base_dir, series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(output_dir, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
     ]
     for leg in legacy_candidates:
@@ -1340,6 +1346,7 @@ def download_season(
     server_index: int = 0,
     pause_event: Optional[threading.Event] = None,
     cancel_event: Optional[threading.Event] = None,
+    download_dir: Optional[str] = None,
 ) -> None:
     """download an entire season"""
     print(f"Found {len(episodes)} episodes in this season!\n")
@@ -1396,6 +1403,7 @@ def download_season(
             server_index=server_index,
             pause_event=pause_event,
             cancel_event=cancel_event,
+            download_dir=download_dir,
         )
         print()
 
@@ -1415,6 +1423,7 @@ def download_series(
     server_index: int = 0,
     pause_event: Optional[threading.Event] = None,
     cancel_event: Optional[threading.Event] = None,
+    download_dir: Optional[str] = None,
 ) -> None:
     """grab everything for a series"""
     # Catalog endpoints require concrete locales. Sending ``all`` here makes
@@ -1501,6 +1510,7 @@ def download_series(
             server_index=server_index,
             pause_event=pause_event,
             cancel_event=cancel_event,
+            download_dir=download_dir,
         )
 
 def _get_keys_for_stream(
@@ -1545,6 +1555,7 @@ def _download_episode_n_m3u8dl_re(
     server_index: int = 0,
     pause_event: Optional[threading.Event] = None,
     cancel_event: Optional[threading.Event] = None,
+    download_dir: Optional[str] = None,
 ) -> str:
     """Download an episode using N_m3u8DL-RE and mux to MKV with FFmpeg.
 
@@ -1610,16 +1621,22 @@ def _download_episode_n_m3u8dl_re(
     ep_title = sanitize_filename(info.title or "Unknown")
     season_num = info.episode_metadata.season_number
     ep_num = info.episode_metadata.episode_number
+
+    if not download_dir:
+        from .auth import load_config
+        download_dir = load_config().get("download_dir", "")
+    base_dir = os.path.abspath(os.path.expanduser(download_dir.strip())) if download_dir and download_dir.strip() else "."
+
     season_folder = f"Season {season_num:02d}"
-    output_dir = os.path.join(".", series_title, season_folder)
+    output_dir = os.path.join(base_dir, series_title, season_folder)
     os.makedirs(output_dir, exist_ok=True)
     filename = f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"
     output_filename = os.path.join(output_dir, filename)
 
     # Legacy file detection and seamless migration into Season subfolder
     legacy_candidates = [
-        os.path.join(".", series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
-        os.path.join(".", series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
+        os.path.join(base_dir, series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
+        os.path.join(base_dir, series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(output_dir, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
     ]
     for leg in legacy_candidates:

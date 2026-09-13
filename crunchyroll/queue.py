@@ -32,6 +32,7 @@ class QueueItem:
     audio_langs: List[str] = field(default_factory=lambda: ["ja-JP"])
     subs_langs: List[str] = field(default_factory=lambda: ["en-US"])
     force_download: bool = False
+    download_dir: str = ""
     status: str = "queued"  # queued | running | paused | completed | failed | canceled
     error: Optional[str] = None
     created_at: float = field(default_factory=time.time)
@@ -64,6 +65,7 @@ class QueueItem:
             "audio_langs": self.audio_langs,
             "subs_langs": self.subs_langs,
             "force_download": self.force_download,
+            "download_dir": self.download_dir,
             "status": self.status,
             "error": self.error,
             "created_at": self.created_at,
@@ -249,6 +251,7 @@ class DownloadQueue:
             al = normalize_langs(item.get("audio_langs") or item.get("audio_lang") or opts.get("audio_lang") or ["ja-JP"])
             sl = normalize_langs(item.get("subs_langs") or item.get("subs_lang") or opts.get("subs_lang") or ["en-US"])
             fd = bool(item.get("force_download", opts.get("force_download", False)))
+            dl_dir = str(item.get("download_dir") or opts.get("download_dir") or "").strip()
         else:
             ep_id = str(item).strip()
             title = ""
@@ -260,6 +263,7 @@ class DownloadQueue:
             al = normalize_langs(opts.get("audio_lang") or ["ja-JP"])
             sl = normalize_langs(opts.get("subs_lang") or ["en-US"])
             fd = bool(opts.get("force_download", False))
+            dl_dir = str(opts.get("download_dir") or "").strip()
 
         if not ep_id:
             return None
@@ -284,6 +288,7 @@ class DownloadQueue:
                 audio_langs=al,
                 subs_langs=sl,
                 force_download=fd,
+                download_dir=dl_dir,
                 status="queued",
                 task_id=task_id or "",
             )
@@ -710,6 +715,7 @@ class DownloadQueue:
                     force_download=job.force_download,
                     pause_event=self.pause_event,
                     cancel_event=self.cancel_event,
+                    download_dir=job.download_dir,
                     concurrency_config=ConcurrencyConfig(
                         min_workers=8,
                         max_workers=16,

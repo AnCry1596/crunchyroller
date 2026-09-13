@@ -67,6 +67,7 @@ if not os.path.exists(WEB_DIR):
     WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
 # global download & app state
+CURRENT_WINDOW = None
 initial_cfg = load_config()
 STATE = {
     "etp_rt": initial_cfg.get("etp_rt", ""),
@@ -77,6 +78,7 @@ STATE = {
         "audio_lang":    initial_cfg.get("audio_lang", "ja-JP"),
         "subs_lang":     initial_cfg.get("subs_lang", "en-US"),
         "force_download": bool(initial_cfg.get("force_download", False)),
+        "download_dir":  initial_cfg.get("download_dir", ""),
     },
     "download": {
         "status":      "idle",
@@ -363,7 +365,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
                 # Keep STATE in sync with config.json on disk so manual user edits are immediately honored
                 disk_cfg = load_config()
-                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download"):
+                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "download_dir"):
                     if k in disk_cfg:
                         STATE["config"][k] = disk_cfg[k]
                 if disk_cfg.get("etp_rt"):
@@ -504,12 +506,52 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/config":
             with LOCK:
                 disk_cfg = load_config()
-                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download"):
+                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "download_dir"):
                     if k in data:
-                        STATE["config"][k] = data[k]
-                        disk_cfg[k] = data[k]
+                        val = data[k]
+                        if k == "download_dir" and val:
+                            val = os.path.abspath(os.path.expanduser(str(val).strip()))
+                        STATE["config"][k] = val
+                        disk_cfg[k] = val
             save_config(disk_cfg)
-            self._json({"success": True})
+            self._json({"success": True, "download_dir": STATE["config"].get("download_dir", "")})
+
+        elif path in ("/api/choose-directory", "/api/browse-directory"):
+            chosen = None
+            # 1. If running inside pywebview window, use its native folder picker
+            if CURRENT_WINDOW is not None:
+                try:
+                    import webview
+                    res = CURRENT_WINDOW.create_file_dialog(webview.FOLDER_DIALOG)
+                    if res and len(res) > 0:
+                        chosen = res[0]
+                except Exception as e:
+                    print(f"[gui] folder dialog error: {e}")
+
+            # 2. Fallback to tkinter if pywebview didn't return or browser mode
+            if not chosen:
+                try:
+                    import tkinter as tk
+                    from tkinter import filedialog
+                    root = tk.Tk()
+                    root.withdraw()
+                    root.attributes("-topmost", True)
+                    chosen = filedialog.askdirectory(title="Select Download Directory")
+                    root.destroy()
+                except Exception:
+                    chosen = None
+
+            if chosen:
+                chosen = os.path.abspath(os.path.expanduser(chosen))
+                with LOCK:
+                    STATE["config"]["download_dir"] = chosen
+                    disk_cfg = load_config()
+                    disk_cfg["download_dir"] = chosen
+                    save_config(disk_cfg)
+                self._json({"success": True, "download_dir": chosen})
+            else:
+                self._json({"success": False, "error": "No directory selected", "cancelled": True})
+            return
 
         elif path == "/api/fetch":
             url = data.get("url","").strip()
@@ -590,6 +632,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             sl = data.get("subs_lang", c["subs_lang"])
             fd = bool(data.get("force_download", c.get("force_download", False)))
 
+            dl_dir = str(data.get("download_dir") or c.get("download_dir") or "").strip()
             task_title = str(data.get("task_title") or data.get("series_title") or "").strip()
             enqueued = QUEUE.enqueue_batch(items, {
                 "video_quality": vq,
@@ -597,6 +640,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "audio_lang": al,
                 "subs_lang": sl,
                 "force_download": fd,
+                "download_dir": dl_dir,
             }, task_title=task_title)
             with LOCK:
                 STATE["download"]["status"] = "running"
@@ -712,7 +756,8 @@ def start_gui(port=8000, use_browser=False):
     else:
         try:
             import webview
-            webview.create_window(
+            global CURRENT_WINDOW
+            CURRENT_WINDOW = webview.create_window(
                 "crunchyroller",
                 url=url,
                 width=860,

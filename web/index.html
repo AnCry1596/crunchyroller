@@ -110,6 +110,20 @@
       </div>
 
       <div class="card">
+        <div class="card-label">directory</div>
+        <div class="field">
+          <label>download folder</label>
+          <div class="row">
+            <input type="text" id="download-dir" placeholder="default: current folder (./)" onchange="saveCfg()">
+            <button class="btn-s" id="browse-dir-btn" onclick="browseDirectory()">browse</button>
+          </div>
+        </div>
+        <p class="hint">
+          episodes will be saved into Series / Season XX folders inside this directory.
+        </p>
+      </div>
+
+      <div class="card">
         <div class="card-label">download</div>
         <div class="row">
           <input type="text" id="url" placeholder="paste a crunchyroll url">
@@ -189,6 +203,6 @@
 
   <div id="toast"></div>
   <script src="/js/particles.js?v=3.0.0"></script>
-  <script src="/js/app.js?v=3.0.0"></script>
+  <script src="/js/app.js?v=3.0.1"></script>
 </body>
 </html>

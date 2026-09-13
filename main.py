@@ -159,6 +159,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
         hedging_enabled=hedging_enabled,
     )
 
+    dl_dir = getattr(args, "output_dir", None)
     if content_type == "episode":
         info = get_episode_info(client, content_id)
         download_episode(
@@ -173,6 +174,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             concurrency_config=concurrency_cfg,
             force_download=getattr(args, "force_download", False),
             server_index=server_index,
+            download_dir=dl_dir,
         )
     elif content_type == "series":
         download_series(
@@ -187,6 +189,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             concurrency_config=concurrency_cfg,
             force_download=getattr(args, "force_download", False),
             server_index=server_index,
+            download_dir=dl_dir,
         )
     elif content_type == "season":
         episodes = get_season_episodes(client, content_id, primary_audio, primary_subs)
@@ -201,6 +204,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             concurrency_config=concurrency_cfg,
             force_download=getattr(args, "force_download", False),
             server_index=server_index,
+            download_dir=dl_dir,
         )
 
 
@@ -251,6 +255,15 @@ def main() -> None:
     parser.add_argument("--audio-quality", type=str, default="192k", help="Audio quality (192k, 96k)")
     parser.add_argument("--quality-video", type=str, default="", help="Alias for --video-quality")
     parser.add_argument("--quality-audio", type=str, default="", help="Alias for --audio-quality")
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        "--dir",
+        dest="output_dir",
+        type=str,
+        default=None,
+        help="Target directory for downloaded series and episodes (default: current directory or config.json)",
+    )
     parser.add_argument(
         "--workers",
         type=int,
