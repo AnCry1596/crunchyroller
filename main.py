@@ -41,6 +41,7 @@ if sys.platform == "win32":
 sys.stdout = SafeStream(sys.stdout)
 sys.stderr = SafeStream(sys.stderr)
 
+from crunchyroll import __version__
 from crunchyroll.api import get_episode_info, get_season_episodes, get_seasons, parse_url_type
 from crunchyroll.auth import load_config, save_config
 from crunchyroll.downloader import download_episode, download_season, download_series
@@ -219,9 +220,14 @@ def prompt_star_if_first_run() -> None:
 
 
 def main() -> None:
-    prompt_star_if_first_run()
     parser = argparse.ArgumentParser(
         description="Downloads anime from Crunchyroll and outputs them in an MKV file."
+    )
+    parser.add_argument(
+        "--version",
+        "-v",
+        action="version",
+        version=f"crunchyroller v{__version__}",
     )
     parser.add_argument("--gui", action="store_true", help="Launch native desktop GUI app")
     parser.add_argument("--browser", action="store_true", help="Force opening GUI in default web browser instead of native app window")
@@ -304,6 +310,7 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    prompt_star_if_first_run()
     if args.positional_url and not args.url:
         args.url = args.positional_url
 
