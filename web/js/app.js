@@ -284,8 +284,22 @@ async function api(endpoint, payload = null) {
   const options = payload != null
     ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }
     : { method: 'GET' };
-  const res = await fetch(endpoint, options);
-  return res.json();
+  try {
+    const res = await fetch(endpoint, options);
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch (parseErr) {
+      console.warn(`[api] Non-JSON response from ${endpoint} (HTTP ${res.status}):`, text.slice(0, 150));
+      return {
+        success: false,
+        error: `HTTP ${res.status}: Server returned HTML instead of JSON. If you just updated files, please restart web_gui.py!`,
+      };
+    }
+  } catch (netErr) {
+    console.error(`[api] Network error calling ${endpoint}:`, netErr);
+    return { success: false, error: netErr.message || 'Network error' };
+  }
 }
 
 // init app state on page load
@@ -730,11 +744,46 @@ function startPolling() {
   pollTimer = setInterval(async () => {
     const state = await api('/api/state');
     updateProgressPanel(state.download);
-    if (state.download.status !== 'running') {
+    if (state.download.status !== 'running' && state.download.status !== 'paused') {
       clearInterval(pollTimer);
       pollTimer = null;
     }
   }, 800);
+}
+
+async function togglePause() {
+  const btn = document.getElementById('dl-pause-btn');
+  if (!btn) return;
+  if (btn.dataset.action === 'resume') {
+    const res = await api('/api/download/resume', {});
+    if (res && res.success) {
+      btn.textContent = 'pause';
+      btn.dataset.action = 'pause';
+      toast('download resumed');
+      startPolling();
+    } else {
+      toast(res?.error || 'failed to resume', 'err');
+    }
+  } else {
+    const res = await api('/api/download/pause', {});
+    if (res && res.success) {
+      btn.textContent = 'resume';
+      btn.dataset.action = 'resume';
+      toast('download paused');
+    } else {
+      toast(res?.error || 'failed to pause', 'err');
+    }
+  }
+}
+
+async function cancelDl() {
+  if (!confirm('Are you sure you want to cancel the active download?')) return;
+  const res = await api('/api/download/cancel', {});
+  if (res && res.success) {
+    toast('download cancelled', 'err');
+  } else {
+    toast(res?.error || 'failed to cancel', 'err');
+  }
 }
 
 function updateProgressPanel(dl) {
@@ -742,6 +791,26 @@ function updateProgressPanel(dl) {
   document.getElementById('dl-panel').style.display = 'block';
 
   const pill = document.getElementById('pill');
+  const pauseBtn = document.getElementById('dl-pause-btn');
+  const cancelBtn = document.getElementById('dl-cancel-btn');
+
+  if (pauseBtn && cancelBtn) {
+    if (dl.status === 'running' || dl.status === 'paused') {
+      pauseBtn.style.display = 'inline-block';
+      cancelBtn.style.display = 'inline-block';
+      if (dl.status === 'paused') {
+        pauseBtn.textContent = 'resume';
+        pauseBtn.dataset.action = 'resume';
+      } else {
+        pauseBtn.textContent = 'pause';
+        pauseBtn.dataset.action = 'pause';
+      }
+    } else {
+      pauseBtn.style.display = 'none';
+      cancelBtn.style.display = 'none';
+    }
+  }
+
   if (dl.status === 'running') {
     pill.className = 'pill pill-run';
     if (dl.track === 'muxing') {
@@ -751,9 +820,15 @@ function updateProgressPanel(dl) {
     } else {
       pill.innerHTML = '<span class="spin"></span>downloading';
     }
+  } else if (dl.status === 'paused') {
+    pill.className = 'pill pill-paused';
+    pill.innerHTML = '\u23f8 paused';
   } else if (dl.status === 'completed') {
     pill.className = 'pill pill-ok';
     pill.innerHTML = '\u2713 done';
+  } else if (dl.status === 'canceled') {
+    pill.className = 'pill pill-err';
+    pill.innerHTML = '\u2717 canceled';
   } else {
     pill.className = 'pill pill-err';
     pill.innerHTML = '\u2717 ' + dl.status;

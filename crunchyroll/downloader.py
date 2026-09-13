@@ -130,6 +130,8 @@ def download_parts(
     concurrency_config: Optional[ConcurrencyConfig] = None,
     track_type: str = "video",
     period_duration_seconds: Optional[float] = None,
+    pause_event: Optional[threading.Event] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> str:
     """Download all track segments using high-performance streaming assembly and session pool."""
     # SegmentTemplate may be inherited from AdaptationSet, Representation,
@@ -220,6 +222,8 @@ def download_parts(
                 progress_callback=_file_progress,
                 parallel_ranges=8,
                 range_size=4 * 1024 * 1024,
+                pause_event=pause_event,
+                cancel_event=cancel_event,
             )
             elapsed = time.time() - start_time
             speed_mb = total_bytes / max(elapsed, 0.001) / (1024 * 1024)
@@ -261,7 +265,11 @@ def download_parts(
 
         # Step 1: Download and write initialization segment directly
         init_url = build_url(base_url, representation_id, init_file)
-        init_data = pool.download_segment(init_url)
+        init_data = pool.download_segment(
+            init_url,
+            pause_event=pause_event,
+            cancel_event=cancel_event,
+        )
 
         # Step 2: Initialize bounded streaming assembler (< 32 MB RAM)
         assembler = StreamAssembler(
@@ -285,11 +293,61 @@ def download_parts(
         worker_error: List[Exception] = []
         active_requests = 0
 
+        # Global pause tracking (must not multiply across 16 threads)
+        pause_state_lock = threading.Lock()
+        is_paused = False
+        pause_start_time = 0.0
+        total_paused_time = 0.0
+
+        # Smooth rolling speed calculation
+        last_speed_time = time.time()
+        last_speed_bytes = 0
+        current_speed_mb = 0.0
+
         max_allowed_workers = pool.config.max_workers
 
         def _worker_loop():
             nonlocal completed_count, downloaded_bytes, active_requests
+            nonlocal is_paused, pause_start_time, total_paused_time
+            nonlocal last_speed_time, last_speed_bytes, current_speed_mb
+
             while not job_queue.empty() and not worker_error:
+                if cancel_event and cancel_event.is_set():
+                    assembler.abort(InterruptedError("Download cancelled by user"))
+                    break
+                if pause_event and not pause_event.is_set():
+                    with pause_state_lock:
+                        if not is_paused:
+                            is_paused = True
+                            pause_start_time = time.time()
+
+                    _invoke_progress_cb(
+                        progress_cb,
+                        ep_title,
+                        completed_count,
+                        total,
+                        "0 MB/s",
+                        0.0,
+                        f"{track_type}-paused",
+                    )
+                    while not pause_event.is_set():
+                        if cancel_event and cancel_event.is_set():
+                            break
+                        pause_event.wait(timeout=0.2)
+
+                    with pause_state_lock:
+                        if is_paused:
+                            is_paused = False
+                            total_paused_time += max(0.0, time.time() - pause_start_time)
+                            with progress_lock:
+                                last_speed_time = time.time()
+                                last_speed_bytes = downloaded_bytes
+                                current_speed_mb = 0.0
+
+                    if cancel_event and cancel_event.is_set():
+                        assembler.abort(InterruptedError("Download cancelled by user"))
+                        break
+
                 try:
                     idx, url = job_queue.get_nowait()
                 except queue.Empty:
@@ -298,7 +356,11 @@ def download_parts(
                 try:
                     with progress_lock:
                         active_requests += 1
-                    seg_data = pool.download_segment(url)
+                    seg_data = pool.download_segment(
+                        url,
+                        pause_event=pause_event,
+                        cancel_event=cancel_event,
+                    )
                     assembler.add_segment(idx, seg_data)
 
                     with progress_lock:
@@ -309,10 +371,24 @@ def download_parts(
                         cur_bytes = downloaded_bytes
                         cur_active = active_requests
 
-                    elapsed = time.time() - start_time
-                    speed_mb = (cur_bytes / elapsed / (1024 * 1024)) if elapsed > 0 else 0.0
-                    speed_str = f"{speed_mb:.2f} MB/s"
-                    percent = (100 * cur_completed) // total if total > 0 else 100
+                        now = time.time()
+                        dt = now - last_speed_time
+                        if dt >= 0.5:
+                            d_bytes = cur_bytes - last_speed_bytes
+                            instant_speed = (d_bytes / dt) / (1024 * 1024)
+                            if current_speed_mb <= 0.0:
+                                current_speed_mb = instant_speed
+                            else:
+                                current_speed_mb = 0.6 * instant_speed + 0.4 * current_speed_mb
+                            last_speed_time = now
+                            last_speed_bytes = cur_bytes
+                        elif current_speed_mb <= 0.0:
+                            effective_elapsed = max(0.001, (now - start_time) - total_paused_time)
+                            current_speed_mb = (cur_bytes / effective_elapsed / (1024 * 1024))
+
+                        speed_mb = current_speed_mb
+                        speed_str = f"{speed_mb:.2f} MB/s"
+                        percent = (100 * cur_completed) // total if total > 0 else 100
 
                     if sys.stdout is not None:
                         try:
@@ -367,6 +443,14 @@ def download_parts(
         for t in threads:
             t.join()
 
+        if cancel_event and cancel_event.is_set():
+            if os.path.exists(raw_path):
+                try:
+                    os.remove(raw_path)
+                except Exception:
+                    pass
+            raise InterruptedError("Download cancelled by user")
+
         if worker_error:
             if sys.stdout is not None:
                 try:
@@ -406,10 +490,19 @@ def download_parts(
 
 
 
-def download_subs(url: str, pool: Optional[SessionPool] = None) -> str:
+def download_subs(
+    url: str,
+    pool: Optional[SessionPool] = None,
+    pause_event: Optional[threading.Event] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> str:
     """grab subs and stash in a temp file, validating payload format"""
     session_pool = pool or _get_global_session_pool()
-    content = session_pool.download_segment(url)
+    content = session_pool.download_segment(
+        url,
+        pause_event=pause_event,
+        cancel_event=cancel_event,
+    )
     if not content or content.strip().startswith(b"<?xml") or b"<Error>" in content:
         raise RuntimeError(f"Invalid subtitle response from {session_pool._safe_url(url)}")
     suffix = ".vtt" if b"WEBVTT" in content[:40] else ".ass"
@@ -628,6 +721,8 @@ def download_episode(
     concurrency_config: Optional[ConcurrencyConfig] = None,
     force_download: bool = False,
     server_index: int = 0,
+    pause_event: Optional[threading.Event] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> str:
     """download all streams for an episode and mux to mkv using shared session pooling"""
     from .auth import load_config
@@ -646,6 +741,8 @@ def download_episode(
             concurrency_config=concurrency_config,
             force_download=force_download,
             server_index=server_index,
+            pause_event=pause_event,
+            cancel_event=cancel_event,
         )
 
     audio_all = _is_all_tracks(audio_langs)
@@ -877,7 +974,12 @@ def download_episode(
             if subtitle and subtitle.url:
                 print(f"Downloading subtitles for {track_title(actual_locale)}...")
                 try:
-                    sub_file = download_subs(subtitle.url, pool=shared_pool)
+                    sub_file = download_subs(
+                        subtitle.url,
+                        pool=shared_pool,
+                        pause_event=pause_event,
+                        cancel_event=cancel_event,
+                    )
                 except Exception as exc:
                     print(
                         f"Warning: Primary subtitle download failed for {track_title(actual_locale)} ({exc}). "
@@ -890,6 +992,9 @@ def download_episode(
                 sub_file = _try_fallback_subtitles(
                     client, info, actual_locale, pool=shared_pool, exclude_id=first_playback_id
                 )
+
+            if cancel_event and cancel_event.is_set():
+                raise InterruptedError("Download cancelled by user")
 
             if sub_file:
                 sub_tracks.append(
@@ -922,6 +1027,8 @@ def download_episode(
         # Prepare track metadata
         audio_descriptors = []
         for i, version in enumerate(versions):
+            if cancel_event and cancel_event.is_set():
+                raise InterruptedError("Download cancelled by user")
             content_id = version.guid or base_content_id
             stream_queue = 1 if i > 0 else 0
             ep = playback_cache.get(content_id)
@@ -981,6 +1088,8 @@ def download_episode(
                     pool=shared_pool,
                     track_type="audio",
                     period_duration_seconds=prepared["period_duration_seconds"],
+                    pause_event=pause_event,
+                    cancel_event=cancel_event,
                 )
             except Exception as exc:
                 if not _stream_expired_error(exc):
@@ -1024,6 +1133,8 @@ def download_episode(
                     pool=shared_pool,
                     track_type="audio",
                     period_duration_seconds=prepared["period_duration_seconds"],
+                    pause_event=pause_event,
+                    cancel_event=cancel_event,
                 )
             audio_tracks.append(
                 MediaTrack(
@@ -1049,6 +1160,8 @@ def download_episode(
         # because manifests and licenses for later tracks may still depend on
         # their respective tokens.
         if video_download_args is not None:
+            if cancel_event and cancel_event.is_set():
+                raise InterruptedError("Download cancelled by user")
             (
                 video_base_url,
                 video_rep_id,
@@ -1069,6 +1182,8 @@ def download_episode(
                     pool=shared_pool,
                     track_type="video",
                     period_duration_seconds=period_duration_seconds,
+                    pause_event=pause_event,
+                    cancel_event=cancel_event,
                 )
             except Exception as exc:
                 if not _stream_expired_error(exc):
@@ -1115,10 +1230,15 @@ def download_episode(
                     pool=shared_pool,
                     track_type="video",
                     period_duration_seconds=prepared["period_duration_seconds"],
+                    pause_event=pause_event,
+                    cancel_event=cancel_event,
                 )
 
         if not video_file:
             raise RuntimeError("No video file downloaded!")
+
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Download cancelled by user")
 
         _invoke_progress_cb(
             progress_cb,
@@ -1202,10 +1322,24 @@ def download_season(
     concurrency_config: Optional[ConcurrencyConfig] = None,
     force_download: bool = False,
     server_index: int = 0,
+    pause_event: Optional[threading.Event] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> None:
     """download an entire season"""
     print(f"Found {len(episodes)} episodes in this season!\n")
     for i, ep in enumerate(episodes):
+        if cancel_event and cancel_event.is_set():
+            print("Season download cancelled by user.")
+            break
+        if pause_event and not pause_event.is_set():
+            print("Queue paused. Waiting for resume...")
+            while not pause_event.is_set():
+                if cancel_event and cancel_event.is_set():
+                    break
+                pause_event.wait(timeout=0.5)
+            if cancel_event and cancel_event.is_set():
+                break
+
         if i > 0:
             time.sleep(random.uniform(1.5, 3.0))
         print(f"=== [{i+1}/{len(episodes)}] {ep.title} ===")
@@ -1244,6 +1378,8 @@ def download_season(
             concurrency_config=concurrency_config,
             force_download=force_download,
             server_index=server_index,
+            pause_event=pause_event,
+            cancel_event=cancel_event,
         )
         print()
 
@@ -1261,6 +1397,8 @@ def download_series(
     concurrency_config: Optional[ConcurrencyConfig] = None,
     force_download: bool = False,
     server_index: int = 0,
+    pause_event: Optional[threading.Event] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> None:
     """grab everything for a series"""
     # Catalog endpoints require concrete locales. Sending ``all`` here makes
@@ -1292,6 +1430,18 @@ def download_series(
     )
 
     for i, ep in enumerate(episodes):
+        if cancel_event and cancel_event.is_set():
+            print("Series download cancelled by user.")
+            break
+        if pause_event and not pause_event.is_set():
+            print("Queue paused. Waiting for resume...")
+            while not pause_event.is_set():
+                if cancel_event and cancel_event.is_set():
+                    break
+                pause_event.wait(timeout=0.5)
+            if cancel_event and cancel_event.is_set():
+                break
+
         if i > 0:
             time.sleep(random.uniform(1.5, 3.0))
         print(f"=== [{i+1}/{len(episodes)}] {ep.series_title} S{ep.season_number:02d}E{ep.episode_number:02d} - {ep.title} ===")
@@ -1333,6 +1483,8 @@ def download_series(
             concurrency_config=concurrency_config,
             force_download=force_download,
             server_index=server_index,
+            pause_event=pause_event,
+            cancel_event=cancel_event,
         )
 
 def _get_keys_for_stream(
@@ -1375,6 +1527,8 @@ def _download_episode_n_m3u8dl_re(
     concurrency_config: Optional[ConcurrencyConfig] = None,
     force_download: bool = False,
     server_index: int = 0,
+    pause_event: Optional[threading.Event] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> str:
     """Download an episode using N_m3u8DL-RE and mux to MKV with FFmpeg.
 

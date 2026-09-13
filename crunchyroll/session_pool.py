@@ -306,8 +306,18 @@ class SessionPool:
         url: str,
         timeout: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
+        pause_event: Optional[threading.Event] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> bytes:
-        """Download a single media segment into bytes with retries and metrics tracking."""
+        """Download a single media segment into bytes with retries, metrics tracking, and pause/cancel support."""
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Download cancelled by user")
+        if pause_event and not pause_event.is_set():
+            while not pause_event.is_set():
+                if cancel_event and cancel_event.is_set():
+                    raise InterruptedError("Download cancelled by user")
+                pause_event.wait(timeout=0.2)
+
         RateLimitGate.wait_if_blocked()
         read_timeout = float(timeout) if timeout else float(self.timeout)
         t_out = (4.0, read_timeout)
@@ -318,6 +328,14 @@ class SessionPool:
         attempt = 0
         last_exception: Optional[Exception] = None
         while attempt < self.max_retries:
+            if cancel_event and cancel_event.is_set():
+                raise InterruptedError("Download cancelled by user")
+            if pause_event and not pause_event.is_set():
+                while not pause_event.is_set():
+                    if cancel_event and cancel_event.is_set():
+                        raise InterruptedError("Download cancelled by user")
+                    pause_event.wait(timeout=0.2)
+
             RateLimitGate.wait_if_blocked()
             start_t = time.time()
             attempt_number = attempt + 1
@@ -434,14 +452,18 @@ class SessionPool:
         progress_callback=None,
         parallel_ranges: int = 8,
         range_size: int = 4 * 1024 * 1024,
+        pause_event: Optional[threading.Event] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> int:
-        """Stream a complete media file to disk and reject truncated responses.
+        """Stream a complete media file to disk and reject truncated responses."""
+        if cancel_event and cancel_event.is_set():
+            raise InterruptedError("Download cancelled by user")
+        if pause_event and not pause_event.is_set():
+            while not pause_event.is_set():
+                if cancel_event and cancel_event.is_set():
+                    raise InterruptedError("Download cancelled by user")
+                pause_event.wait(timeout=0.2)
 
-        ``progress_callback`` receives ``(written_bytes, expected_bytes,
-        speed_mb_s)`` periodically and once more when the response completes.
-        ``expected_bytes`` is zero when the server does not provide a numeric
-        Content-Length.
-        """
         # Use a separate read timeout so a CDN that stops sending bytes cannot
         # leave the complete-file branch waiting indefinitely.
         t_out = (10, timeout or self.timeout)
@@ -460,12 +482,22 @@ class SessionPool:
                 parallel_ranges,
                 range_size,
                 progress_callback,
+                pause_event=pause_event,
+                cancel_event=cancel_event,
             )
             if ranged_size is not None:
                 return ranged_size
 
         last_exception: Optional[Exception] = None
         for attempt in range(self.max_retries):
+            if cancel_event and cancel_event.is_set():
+                raise InterruptedError("Download cancelled by user")
+            if pause_event and not pause_event.is_set():
+                while not pause_event.is_set():
+                    if cancel_event and cancel_event.is_set():
+                        raise InterruptedError("Download cancelled by user")
+                    pause_event.wait(timeout=0.2)
+
             RateLimitGate.wait_if_blocked()
             started = time.time()
             last_progress = started
@@ -495,6 +527,14 @@ class SessionPool:
                     expected_bytes = int(expected) if expected and expected.isdigit() else None
                     with open(output_path, "wb", buffering=1024 * 1024) as output:
                         for chunk in resp.iter_content(chunk_size=c_size):
+                            if cancel_event and cancel_event.is_set():
+                                raise InterruptedError("Download cancelled by user")
+                            if pause_event and not pause_event.is_set():
+                                while not pause_event.is_set():
+                                    if cancel_event and cancel_event.is_set():
+                                        raise InterruptedError("Download cancelled by user")
+                                    pause_event.wait(timeout=0.2)
+
                             if chunk:
                                 output.write(chunk)
                                 written += len(chunk)
@@ -561,6 +601,8 @@ class SessionPool:
         worker_count: int,
         range_size: int,
         progress_callback,
+        pause_event: Optional[threading.Event] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Optional[int]:
         """Download a complete file using concurrent byte ranges when supported."""
         probe_headers = dict(headers)
@@ -589,6 +631,14 @@ class SessionPool:
         last_report = 0.0
 
         def download_range(byte_range):
+            if cancel_event and cancel_event.is_set():
+                raise InterruptedError("Download cancelled by user")
+            if pause_event and not pause_event.is_set():
+                while not pause_event.is_set():
+                    if cancel_event and cancel_event.is_set():
+                        raise InterruptedError("Download cancelled by user")
+                    pause_event.wait(timeout=0.2)
+
             start, end = byte_range
             range_headers = dict(headers)
             range_headers["Range"] = f"bytes={start}-{end}"
@@ -600,6 +650,14 @@ class SessionPool:
             range_retries = min(self.max_retries, 3)
             range_timeout = (timeout[0], min(timeout[1], 10))
             for attempt in range(range_retries):
+                if cancel_event and cancel_event.is_set():
+                    raise InterruptedError("Download cancelled by user")
+                if pause_event and not pause_event.is_set():
+                    while not pause_event.is_set():
+                        if cancel_event and cancel_event.is_set():
+                            raise InterruptedError("Download cancelled by user")
+                        pause_event.wait(timeout=0.2)
+
                 RateLimitGate.wait_if_blocked()
                 range_started = time.time()
                 try:

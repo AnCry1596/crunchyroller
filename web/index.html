@@ -6,7 +6,7 @@
   <title>crunchyroller</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=3.0">
+  <link rel="stylesheet" href="/css/style.css?v=3.1">
 </head>
 <body>
 
@@ -149,6 +149,10 @@
           <span id="pill" class="pill pill-run"><span class="spin"></span>downloading</span>
           <span id="dl-ep-counter" class="dl-counter">0 / 0</span>
           <span id="dl-speed" class="dl-speed"></span>
+          <div class="dl-actions">
+            <button id="dl-pause-btn" class="btn-s btn-pause" onclick="togglePause()">pause</button>
+            <button id="dl-cancel-btn" class="btn-s btn-cancel" onclick="cancelDl()">cancel</button>
+          </div>
         </div>
         <div id="cur-ep" class="dl-ep-name"></div>
         <div class="dl-bar-label">
@@ -173,7 +177,7 @@
   </main>
 
   <div id="toast"></div>
-  <script src="/js/particles.js?v=3.0"></script>
-  <script src="/js/app.js?v=3.0"></script>
+  <script src="/js/particles.js?v=3.2"></script>
+  <script src="/js/app.js?v=3.2"></script>
 </body>
 </html>

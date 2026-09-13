@@ -87,6 +87,10 @@ STATE = {
     },
 }
 LOCK = threading.RLock()
+DOWNLOAD_PAUSE_EVENT = threading.Event()
+DOWNLOAD_PAUSE_EVENT.set()
+DOWNLOAD_CANCEL_EVENT = threading.Event()
+DOWNLOAD_CANCEL_EVENT.clear()
 
 
 def get_auth_type() -> str:
@@ -111,6 +115,8 @@ def _log(msg):
 
 
 def _run_download(items, vq, aq, al, sl, force_download=False):
+    DOWNLOAD_PAUSE_EVENT.set()
+    DOWNLOAD_CANCEL_EVENT.clear()
     ep_total = len(items)
     with LOCK:
         STATE["download"].update(
@@ -126,6 +132,29 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
     s_langs = [x.strip() for x in sl.split(",") if x.strip()] or ["en-US"]
 
     for idx, item in enumerate(items):
+        if DOWNLOAD_CANCEL_EVENT.is_set():
+            _log("download cancelled by user.")
+            with LOCK:
+                STATE["download"].update(status="canceled", speed="", track="canceled")
+            return
+
+        if not DOWNLOAD_PAUSE_EVENT.is_set():
+            _log("download paused.")
+            with LOCK:
+                STATE["download"]["status"] = "paused"
+                STATE["download"]["speed"] = "paused"
+            while not DOWNLOAD_PAUSE_EVENT.is_set():
+                if DOWNLOAD_CANCEL_EVENT.is_set():
+                    _log("download cancelled by user.")
+                    with LOCK:
+                        STATE["download"].update(status="canceled", speed="", track="canceled")
+                    return
+                time.sleep(0.5)
+            with LOCK:
+                if STATE["download"]["status"] == "paused":
+                    STATE["download"]["status"] = "running"
+            _log("download resumed.")
+
         if idx > 0:
             time.sleep(random.uniform(1.5, 3.0))
         ep_id = item.get("id") if isinstance(item, dict) else item
@@ -152,6 +181,10 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
                 if complete_file:
                     track_type = track_type[:-5]
 
+                is_paused = track_type.endswith("-paused") or not DOWNLOAD_PAUSE_EVENT.is_set()
+                if track_type.endswith("-paused"):
+                    track_type = track_type[:-7]
+
                 if "audio" in track_type:
                     # Audio represents the first 15% of the episode
                     within_ep = frac * 0.15
@@ -173,17 +206,20 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
                 with LOCK:
                     STATE["download"]["segs_done"]   = cur
                     STATE["download"]["segs_total"]  = tot
-                    STATE["download"]["speed"]        = speed or ""
+                    STATE["download"]["speed"]        = "paused" if is_paused else (speed or "")
                     STATE["download"]["track"]        = display_track
                     STATE["download"]["track_pct"]   = round(frac * 100, 1) if "mux" not in track_type else 100.0
                     STATE["download"]["overall_pct"] = min(overall, cap)
                     STATE["download"]["complete_file"] = complete_file
+                    STATE["download"]["status"]      = "paused" if is_paused else "running"
 
             download_episode(
                 client=client, base_content_id=ep_id, info=info,
                 audio_langs=a_langs, subs_langs=s_langs,
                 video_quality=vq, audio_quality=aq, progress_cb=_cb,
                 force_download=force_download,
+                pause_event=DOWNLOAD_PAUSE_EVENT,
+                cancel_event=DOWNLOAD_CANCEL_EVENT,
                 concurrency_config=ConcurrencyConfig(
                     min_workers=8,
                     max_workers=16,
@@ -199,16 +235,22 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
             _log(f"done: {label}")
 
         except Exception as e:
+            if DOWNLOAD_CANCEL_EVENT.is_set() or isinstance(e, InterruptedError):
+                _log(f"canceled by user: {label}")
+                with LOCK:
+                    STATE["download"].update(status="canceled", episode=f"canceled: {label}", speed="", track="canceled")
+                return
             _log(f"error on {ep_id}: {e}")
             with LOCK:
                 STATE["download"].update(status="error", episode=f"failed: {ep_id}")
             return
 
     with LOCK:
-        STATE["download"].update(
-            status="completed", overall_pct=100.0, track_pct=100.0,
-            episode="all done", track="", speed=""
-        )
+        if not DOWNLOAD_CANCEL_EVENT.is_set():
+            STATE["download"].update(
+                status="completed", overall_pct=100.0, track_pct=100.0,
+                episode="all done", track="", speed=""
+            )
     _log(f"finished {ep_total} episode(s)")
 
 
@@ -270,7 +312,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
 
-        # REST API endpoints
         if path == "/api/state":
             auth_type = get_auth_type()
             with LOCK:
@@ -280,6 +321,39 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "config": STATE["config"],
                     "download": STATE["download"],
                 })
+            return
+
+        elif path == "/api/download/pause":
+            DOWNLOAD_PAUSE_EVENT.clear()
+            with LOCK:
+                if STATE["download"]["status"] == "running":
+                    STATE["download"]["status"] = "paused"
+                    STATE["download"]["speed"] = "paused"
+            _log("download paused by user")
+            self._json({"success": True, "status": "paused"})
+            return
+
+        elif path == "/api/download/resume":
+            DOWNLOAD_PAUSE_EVENT.set()
+            with LOCK:
+                if STATE["download"]["status"] == "paused":
+                    STATE["download"]["status"] = "running"
+            _log("download resumed by user")
+            self._json({"success": True, "status": "running"})
+            return
+
+        elif path == "/api/download/cancel":
+            DOWNLOAD_CANCEL_EVENT.set()
+            DOWNLOAD_PAUSE_EVENT.set()
+            with LOCK:
+                STATE["download"]["status"] = "canceled"
+                STATE["download"]["speed"] = ""
+            _log("download cancelled by user")
+            self._json({"success": True, "status": "canceled"})
+            return
+
+        elif path.startswith("/api/"):
+            self._json({"success": False, "error": f"Endpoint not found: {path}"}, 404)
             return
 
         # serve static files from web/ directory
@@ -436,7 +510,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._json({"success":False,"error":str(e)},500)
 
         elif path == "/api/download":
-            if STATE["download"]["status"] == "running":
+            if STATE["download"]["status"] in ("running", "paused"):
                 self._json({"success":False,"error":"already downloading"},400); return
             if not is_authenticated():
                 self._json({"success":False,"error":"not logged in"},401); return
@@ -453,6 +527,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 bool(data.get("force_download", c.get("force_download", False))),
             )).start()
             self._json({"success": True})
+
+        elif path == "/api/download/pause":
+            DOWNLOAD_PAUSE_EVENT.clear()
+            with LOCK:
+                if STATE["download"]["status"] == "running":
+                    STATE["download"]["status"] = "paused"
+                    STATE["download"]["speed"] = "paused"
+            _log("download paused by user")
+            self._json({"success": True, "status": "paused"})
+
+        elif path == "/api/download/resume":
+            DOWNLOAD_PAUSE_EVENT.set()
+            with LOCK:
+                if STATE["download"]["status"] == "paused":
+                    STATE["download"]["status"] = "running"
+            _log("download resumed by user")
+            self._json({"success": True, "status": "running"})
+
+        elif path == "/api/download/cancel":
+            DOWNLOAD_CANCEL_EVENT.set()
+            DOWNLOAD_PAUSE_EVENT.set()  # unblock if paused so workers exit immediately
+            with LOCK:
+                STATE["download"]["status"] = "canceled"
+                STATE["download"]["speed"] = ""
+            _log("download cancelled by user")
+            self._json({"success": True, "status": "canceled"})
+
+        elif path.startswith("/api/"):
+            self._json({"success": False, "error": f"Endpoint not found: {path}. If you recently updated, please restart web_gui.py."}, 404)
         else:
             self.send_error(404)
 
