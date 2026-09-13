@@ -262,7 +262,7 @@ def main() -> None:
         dest="output_dir",
         type=str,
         default=None,
-        help="Target directory for downloaded series and episodes (default: current directory or config.json)",
+        help="Target directory for downloaded series and episodes (default: anime/ or config.json)",
     )
     parser.add_argument(
         "--workers",

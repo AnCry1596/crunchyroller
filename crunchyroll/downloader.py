@@ -823,8 +823,10 @@ def download_episode(
     ep_num = info.episode_metadata.episode_number
 
     if not download_dir:
-        download_dir = cfg.get("download_dir", "")
-    base_dir = os.path.abspath(os.path.expanduser(download_dir.strip())) if download_dir and download_dir.strip() else "."
+        download_dir = cfg.get("download_dir", "anime")
+    if not download_dir or not download_dir.strip():
+        download_dir = "anime"
+    base_dir = os.path.abspath(os.path.expanduser(download_dir.strip()))
 
     # Plex and Jellyfin standard layout: Series / Season XX / Series - SXXEYY - Title.mkv
     season_folder = f"Season {season_num:02d}"
@@ -838,6 +840,9 @@ def download_episode(
         os.path.join(base_dir, series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(base_dir, series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(output_dir, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
+        os.path.join(".", series_title, season_folder, filename),
+        os.path.join(".", series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
+        os.path.join(".", series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
     ]
     for leg in legacy_candidates:
         if os.path.exists(leg) and not os.path.exists(output_filename):
@@ -1624,8 +1629,10 @@ def _download_episode_n_m3u8dl_re(
 
     if not download_dir:
         from .auth import load_config
-        download_dir = load_config().get("download_dir", "")
-    base_dir = os.path.abspath(os.path.expanduser(download_dir.strip())) if download_dir and download_dir.strip() else "."
+        download_dir = load_config().get("download_dir", "anime")
+    if not download_dir or not download_dir.strip():
+        download_dir = "anime"
+    base_dir = os.path.abspath(os.path.expanduser(download_dir.strip()))
 
     season_folder = f"Season {season_num:02d}"
     output_dir = os.path.join(base_dir, series_title, season_folder)
@@ -1638,6 +1645,9 @@ def _download_episode_n_m3u8dl_re(
         os.path.join(base_dir, series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(base_dir, series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(output_dir, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
+        os.path.join(".", series_title, season_folder, filename),
+        os.path.join(".", series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
+        os.path.join(".", series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
     ]
     for leg in legacy_candidates:
         if os.path.exists(leg) and not os.path.exists(output_filename):

@@ -78,7 +78,7 @@ STATE = {
         "audio_lang":    initial_cfg.get("audio_lang", "ja-JP"),
         "subs_lang":     initial_cfg.get("subs_lang", "en-US"),
         "force_download": bool(initial_cfg.get("force_download", False)),
-        "download_dir":  initial_cfg.get("download_dir", ""),
+        "download_dir":  initial_cfg.get("download_dir", "anime"),
     },
     "download": {
         "status":      "idle",
@@ -365,9 +365,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
                 # Keep STATE in sync with config.json on disk so manual user edits are immediately honored
                 disk_cfg = load_config()
-                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "download_dir"):
+                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download"):
                     if k in disk_cfg:
                         STATE["config"][k] = disk_cfg[k]
+                STATE["config"]["download_dir"] = disk_cfg.get("download_dir", "anime")
                 if disk_cfg.get("etp_rt"):
                     STATE["etp_rt"] = disk_cfg["etp_rt"]
                 if disk_cfg.get("android_access_token"):
@@ -509,12 +510,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "download_dir"):
                     if k in data:
                         val = data[k]
-                        if k == "download_dir" and val:
-                            val = os.path.abspath(os.path.expanduser(str(val).strip()))
+                        if k == "download_dir":
+                            val = str(val).strip() if val else "anime"
+                            if val and val != "anime":
+                                val = os.path.abspath(os.path.expanduser(val))
                         STATE["config"][k] = val
                         disk_cfg[k] = val
             save_config(disk_cfg)
-            self._json({"success": True, "download_dir": STATE["config"].get("download_dir", "")})
+            self._json({"success": True, "download_dir": STATE["config"].get("download_dir", "anime")})
 
         elif path in ("/api/choose-directory", "/api/browse-directory"):
             chosen = None
@@ -632,7 +635,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             sl = data.get("subs_lang", c["subs_lang"])
             fd = bool(data.get("force_download", c.get("force_download", False)))
 
-            dl_dir = str(data.get("download_dir") or c.get("download_dir") or "").strip()
+            dl_dir = str(data.get("download_dir") or c.get("download_dir") or "anime").strip() or "anime"
             task_title = str(data.get("task_title") or data.get("series_title") or "").strip()
             enqueued = QUEUE.enqueue_batch(items, {
                 "video_quality": vq,

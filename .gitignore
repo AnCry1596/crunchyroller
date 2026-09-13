@@ -28,6 +28,7 @@ env/
 venv/
 
 # Media Downloads & Temporary Outputs
+anime/
 *.mkv
 *.mp4
 *.m4a

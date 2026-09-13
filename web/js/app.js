@@ -398,7 +398,7 @@ function applyState(state) {
 
     const dlDirInput = document.getElementById('download-dir');
     if (dlDirInput && state.config.download_dir !== undefined) {
-      dlDirInput.value = state.config.download_dir || '';
+      dlDirInput.value = (state.config.download_dir === 'anime') ? '' : (state.config.download_dir || '');
     }
   }
 
@@ -494,7 +494,7 @@ async function saveCfg() {
     audio_lang: audioVal,
     subs_lang: subsVal,
     force_download: (document.getElementById('force-download') || {}).checked || false,
-    download_dir: dlDirVal.trim(),
+    download_dir: dlDirVal.trim() || 'anime',
   });
 }
 
@@ -779,7 +779,7 @@ async function startDl() {
     audio_lang: audioVal,
     subs_lang: subsVal,
     force_download: (document.getElementById('force-download') || {}).checked || false,
-    download_dir: dlDirVal.trim(),
+    download_dir: dlDirVal.trim() || 'anime',
   });
 
   if (!res.success) {

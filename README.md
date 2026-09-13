@@ -19,7 +19,7 @@
 
 ### Plex & Jellyfin Ready Out-of-the-Box
 
-Downloads automatically sort into standard `Series/Season 01/Series - S01E01 - Title.mkv` folders so home media servers like Jellyfin and Plex instantly match official posters, episode guides, and multi-track audio without manual renaming:
+Downloads automatically default to a dedicated `anime/` directory, sorted into standard `Series/Season 01/Series - S01E01 - Title.mkv` folders so home media servers like Jellyfin and Plex instantly match official posters, episode guides, and multi-track audio without manual renaming:
 
 <img width="1851" height="1034" alt="Jellyfin Library Showcase" src="https://github.com/user-attachments/assets/c2b945a5-ce6b-4f4c-9bb9-abfff0db4bee" />
 
