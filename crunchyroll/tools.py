@@ -22,10 +22,8 @@ def _find_binary(names: List[str]) -> str:
     search_dirs = [
         os.path.join(exe_dir, "bin"),
         os.path.join(root, "bin"),
-        os.path.join(os.getcwd(), "bin"),
         exe_dir,
         root,
-        os.getcwd(),
         os.path.join(exe_dir, "_internal"),
         os.path.join(exe_dir, "_internal", "bin"),
     ]
@@ -64,6 +62,23 @@ def format_keys_for_n_m3u8dl(keys: Dict[bytes, bytes]) -> List[str]:
     for kid, key in keys.items():
         args += ["--key", f"{kid.hex()}:{key.hex()}"]
     return args
+
+
+def _redact_cmd(cmd: List[str]) -> List[str]:
+    """Return a copy of cmd with secrets redacted for logging.
+
+    Redacts the Bearer token in `--header Authorization: ...` and the
+    content keys in `--key KID:KEY` so neither lands in logs.
+    """
+    redacted = list(cmd)
+    for idx, arg in enumerate(redacted):
+        if arg == "--header" and idx + 1 < len(redacted):
+            value = redacted[idx + 1]
+            if value.lower().startswith("authorization:"):
+                redacted[idx + 1] = "Authorization: Bearer ***REDACTED***"
+        elif arg == "--key" and idx + 1 < len(redacted):
+            redacted[idx + 1] = "***REDACTED***"
+    return redacted
 
 
 def run_n_m3u8dl_re(
@@ -136,13 +151,13 @@ def run_n_m3u8dl_re(
     else:
         cmd += ["--select-audio", "for=best"]
 
-    # No subtitles here — existing code fetches .ass from the API
+    # Drop embedded subtitles; .ass subtitle tracks are fetched directly via the API
     cmd += ["--drop-subtitle", ".*"]
 
     if extra_args:
         cmd += extra_args
 
-    logger.info("[n_m3u8dl-re] Command: %s", " ".join(cmd))
+    logger.info("[n_m3u8dl-re] Command: %s", " ".join(_redact_cmd(cmd)))
     print(f"[n_m3u8dl-re] Downloading: {base_name}", flush=True)
 
     try:

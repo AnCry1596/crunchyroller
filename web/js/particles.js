@@ -1,5 +1,4 @@
-// soft floating particles on a dark background
-// nothing fancy, just some dim dots drifting around
+// Ambient background particle animation
 
 const canvas = document.createElement('canvas');
 canvas.id = 'particles';

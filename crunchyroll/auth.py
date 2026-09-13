@@ -21,12 +21,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 
 def _find_fallback_config() -> Optional[str]:
-    """Look for an existing non-empty config.json in sibling crunchyroller directories if current is missing."""
+    """Look for an existing non-empty config.json in parent directory if current is missing."""
     parent_dir = os.path.dirname(_PROJECT_ROOT)
     candidate_dirs = [
-        os.path.join(parent_dir, "crunchyroller"),
-        os.path.join(parent_dir, "crunchyroller-fresh"),
-        os.path.join(parent_dir, "ancry-crunchyroller"),
+        parent_dir,
     ]
     for c_dir in candidate_dirs:
         c_path = os.path.join(c_dir, "config.json")
@@ -90,7 +88,7 @@ def load_config(config_path: str = CONFIG_FILE) -> Dict[str, Any]:
     """Load config from disk. If file does not exist, initialize it safely."""
     with CONFIG_LOCK:
         if not os.path.exists(config_path):
-            # Check if a sibling workspace has an existing config to inherit
+            # Check for existing fallback config to inherit
             fallback = _find_fallback_config()
             if fallback and os.path.isfile(fallback):
                 try:

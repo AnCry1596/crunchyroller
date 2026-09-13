@@ -330,6 +330,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
 
+        # Defense in depth: even read-only API routes require a valid origin.
+        # State-changing actions are POST-only (see below); plain <img>/link
+        # navigations from foreign sites must never reach API logic.
+        if path.startswith("/api/") and not self._validate_origin():
+            self._json({"success": False, "error": "Forbidden: invalid origin"}, 403)
+            return
+
         if path == "/api/state":
             auth_type = get_auth_type()
             with LOCK:
@@ -374,56 +381,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 })
             return
 
-        elif path == "/api/download/pause":
-            QUEUE.pause()
-            DOWNLOAD_PAUSE_EVENT.clear()
-            with LOCK:
-                if STATE["download"]["status"] == "running":
-                    STATE["download"]["status"] = "paused"
-                    STATE["download"]["speed"] = "paused"
-            _log("download paused by user")
-            self._json({"success": True, "status": "paused"})
-            return
-
-        elif path == "/api/download/resume":
-            QUEUE.resume()
-            DOWNLOAD_PAUSE_EVENT.set()
-            with LOCK:
-                if STATE["download"]["status"] == "paused":
-                    STATE["download"]["status"] = "running"
-            _log("download resumed by user")
-            self._json({"success": True, "status": "running"})
-            return
-
-        elif path == "/api/download/skip":
-            QUEUE.cancel_current()
-            _log("active episode skipped by user")
-            self._json({"success": True, "status": "skipped"})
-            return
-
-        elif path in ("/api/download/cancel", "/api/download/cancel-current"):
-            QUEUE.cancel_current()
-            DOWNLOAD_CANCEL_EVENT.set()
-            DOWNLOAD_PAUSE_EVENT.set()
-            with LOCK:
-                if QUEUE.queued_count == 0 and not QUEUE.active_job:
-                    STATE["download"]["status"] = "canceled"
-                STATE["download"]["speed"] = ""
-            _log("active episode cancelled by user")
-            self._json({"success": True, "status": "canceled"})
-            return
-
-        elif path == "/api/download/cancel-all":
-            QUEUE.cancel_all()
-            DOWNLOAD_CANCEL_EVENT.set()
-            DOWNLOAD_PAUSE_EVENT.set()
-            with LOCK:
-                STATE["download"]["status"] = "canceled"
-                STATE["download"]["speed"] = ""
-            _log("all downloads cancelled by user")
-            self._json({"success": True, "status": "canceled"})
-            return
-
         elif path == "/api/queue":
             self._json({
                 "success": True,
@@ -433,35 +390,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             })
             return
 
-        elif path == "/api/queue/remove":
-            from urllib.parse import parse_qs
-            qs = parse_qs(parsed_url.query)
-            job_id = qs.get("id", [""])[0].strip()
-            removed = QUEUE.remove(job_id)
-            self._json({"success": removed})
-            return
-
-        elif path == "/api/task/remove" or path == "/api/task/cancel":
-            from urllib.parse import parse_qs
-            qs = parse_qs(parsed_url.query)
-            task_id = qs.get("id", [""])[0].strip()
-            removed = QUEUE.remove_task(task_id)
-            self._json({"success": removed})
-            return
-
-        elif path == "/api/sessions/purge":
-            try:
-                client = CrunchyrollHttpClient()
-                purged = purge_orphan_streams(client)
-                _log(f"purged {purged} zombie session(s)")
-                self._json({"success": True, "purged": purged})
-            except Exception as e:
-                self._json({"success": False, "error": str(e)}, status=500)
-            return
-
-        elif path == "/api/queue/clear":
-            cleared = QUEUE.clear()
-            self._json({"success": True, "cleared": cleared})
+        elif path in (
+            "/api/download/pause",
+            "/api/download/resume",
+            "/api/download/skip",
+            "/api/download/cancel",
+            "/api/download/cancel-current",
+            "/api/download/cancel-all",
+            "/api/queue/remove",
+            "/api/queue/clear",
+            "/api/task/remove",
+            "/api/task/cancel",
+            "/api/sessions/purge",
+        ):
+            # State-changing actions are POST-only. A plain GET (e.g. an
+            # <img> tag on a foreign site) must never mutate download state.
+            self._json(
+                {"success": False, "error": f"{path} requires POST"},
+                status=405,
+            )
             return
 
         elif path.startswith("/api/"):
