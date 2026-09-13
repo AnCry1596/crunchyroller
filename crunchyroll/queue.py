@@ -94,11 +94,12 @@ class DownloadTask:
         active_progress_pct: float = 0.0,
     ) -> Dict[str, Any]:
         task_items = [items_map[iid] for iid in self.item_ids if iid in items_map]
-        total = len(task_items)
-        completed = sum(1 for it in task_items if it.status == "completed")
-        failed = sum(1 for it in task_items if it.status == "failed")
+        active_items = [it for it in task_items if it.status != "canceled"]
+        total = len(active_items)
+        completed = sum(1 for it in active_items if it.status == "completed")
+        failed = sum(1 for it in active_items if it.status == "failed")
         canceled = sum(1 for it in task_items if it.status == "canceled")
-        is_active = any(it.id == active_job_id for it in task_items)
+        is_active = any(it.id == active_job_id for it in active_items)
 
         if total == 0:
             progress = 0.0
@@ -109,15 +110,19 @@ class DownloadTask:
             active_slice = (active_progress_pct / 100.0) / total if is_active else 0.0
             progress = round(min(99.9, (base + active_slice) * 100.0), 1)
 
-        if is_active:
-            st = "paused" if any(it.status == "paused" for it in task_items) else "running"
+        if self.status == "canceled":
+            st = "canceled"
+        elif is_active:
+            st = "paused" if any(it.status == "paused" for it in active_items) else "running"
         elif completed == total and total > 0:
             st = "completed"
-        elif completed + failed + canceled == total and total > 0:
+        elif total == 0 and canceled > 0:
+            st = "canceled"
+        elif completed + failed == total and total > 0:
             st = "failed" if failed > 0 else "canceled"
-        elif any(it.status == "paused" for it in task_items):
+        elif any(it.status == "paused" for it in active_items):
             st = "paused"
-        elif any(it.status == "queued" for it in task_items):
+        elif any(it.status == "queued" for it in active_items):
             st = "queued"
         else:
             st = self.status
@@ -339,11 +344,26 @@ class DownloadQueue:
             if target:
                 self.queue.remove(target)
                 target.status = "canceled"
+                if target.task_id and target.task_id in self.tasks:
+                    task = self.tasks[target.task_id]
+                    if target.id in task.item_ids:
+                        task.item_ids.remove(target.id)
+                    if not task.item_ids:
+                        del self.tasks[target.task_id]
+                if target.id in self.all_items_map:
+                    del self.all_items_map[target.id]
                 self.total_batch_count = max(
                     self.completed_batch_count + (1 if self.active_job else 0),
                     self.total_batch_count - 1,
                 )
                 self.log(f"Removed from queue: {target.label}")
+                return True
+            if self.active_job and (self.active_job.id == job_id or self.active_job.ep_id == job_id):
+                if self.active_job.task_id and self.active_job.task_id in self.tasks:
+                    task = self.tasks[self.active_job.task_id]
+                    if self.active_job.id in task.item_ids:
+                        task.item_ids.remove(self.active_job.id)
+                self.cancel_current(job_id=job_id)
                 return True
         return False
 
@@ -381,9 +401,15 @@ class DownloadQueue:
             count = len(self.queue)
             for j in self.queue:
                 j.status = "canceled"
+                if j.task_id and j.task_id in self.tasks:
+                    task = self.tasks[j.task_id]
+                    if j.id in task.item_ids:
+                        task.item_ids.remove(j.id)
             self.queue.clear()
             self.total_batch_count = self.completed_batch_count + (1 if self.active_job else 0)
-            finished_tasks = [tid for tid, t in self.tasks.items() if t.status in ("completed", "canceled", "failed")]
+            tot_batch = max(1, self.total_batch_count)
+            self.overall_pct = round((self.completed_batch_count / tot_batch) * 100, 1)
+            finished_tasks = [tid for tid, t in self.tasks.items() if t.status in ("completed", "canceled", "failed") or len(t.item_ids) == 0]
             for tid in finished_tasks:
                 del self.tasks[tid]
             self.log(f"Queue cleared ({count} item(s) removed).")
@@ -408,20 +434,27 @@ class DownloadQueue:
             self.last_status = "running"
         self.log("Download resumed by user")
 
-    def cancel_current(self):
+    def cancel_current(self, job_id: Optional[str] = None):
         """Cancel/skip active episode and proceed to next in queue."""
-        self.cancel_event.set()
-        self.pause_event.set()  # Unblock if paused
         with self.lock:
-            if self.active_job:
-                self.active_job.status = "canceled"
-                self.log(f"Skipped active episode: {self.active_job.label}")
+            if not self.active_job:
+                return
+            if job_id and self.active_job.id != job_id and self.active_job.ep_id != job_id:
+                return
+            if self.active_job.status in ("completed", "canceled", "failed"):
+                return
+            self.active_job.status = "canceled"
+            self.cancel_event.set()
+            self.pause_event.set()  # Unblock if paused
+            self.log(f"Skipped active episode: {self.active_job.label}")
 
     def cancel_all(self):
         """Cancel active download and clear all upcoming queue items."""
         with self.lock:
             self.cancel_all_flag = True
             cleared = len(self.queue)
+            for j in self.queue:
+                j.status = "canceled"
             self.queue.clear()
             for t in self.tasks.values():
                 if t.status in ("queued", "running"):
@@ -456,14 +489,17 @@ class DownloadQueue:
     def get_state(self) -> Dict[str, Any]:
         """Return standardized state dict compatible with web GUI status panel and queue."""
         with self.lock:
-            if self.cancel_all_flag or (self.active_job and self.active_job.status == "canceled"):
+            if self.cancel_all_flag:
                 status = "canceled"
             elif self.active_job:
-                status = "paused" if not self.pause_event.is_set() else "running"
-            elif self.last_status in ("canceled", "completed", "error"):
-                status = self.last_status
+                if self.active_job.status == "canceled":
+                    status = "running" if len(self.queue) > 0 else "canceled"
+                else:
+                    status = "paused" if not self.pause_event.is_set() else "running"
             elif len(self.queue) > 0:
                 status = "running"
+            elif self.last_status in ("canceled", "completed", "error"):
+                status = self.last_status
             else:
                 status = "idle"
 
@@ -579,6 +615,23 @@ class DownloadQueue:
                     self.worker_thread = None
                     return
 
+                needs_cooldown = not first_item and not self.cancel_all_flag
+            first_item = False
+
+            # Jittered cooldown between consecutive items in batch
+            # Runs while active_job is None so cancel_current() cannot accidentally cancel next job during cooldown!
+            if needs_cooldown:
+                cooldown = random.uniform(*self.cooldown_range)
+                end_time = time.time() + cooldown
+                while time.time() < end_time:
+                    if self.cancel_all_flag:
+                        break
+                    time.sleep(0.05)
+
+            with self.lock:
+                if self.cancel_all_flag or not self.queue:
+                    continue
+
                 job = self.queue.popleft()
                 self.active_job = job
                 job.status = "running"
@@ -589,29 +642,15 @@ class DownloadQueue:
                 self.speed = ""
                 self.track = "starting"
                 self.track_pct = 0.0
-                self.cancel_event.clear()
-
-            # Jittered cooldown between consecutive items in batch
-            if not first_item:
-                cooldown = random.uniform(*self.cooldown_range)
-                end_time = time.time() + cooldown
-                while time.time() < end_time:
-                    if self.cancel_event.is_set() or self.cancel_all_flag:
-                        break
-                    time.sleep(0.1)
-            first_item = False
-
-            if self.cancel_event.is_set() or self.cancel_all_flag:
-                with self.lock:
-                    job.status = "canceled"
-                    job.finished_at = time.time()
-                    self.history.append(job)
-                self.log(f"canceled: {job.label}")
-                continue
+                if not self.cancel_all_flag:
+                    self.cancel_event.clear()
 
             self.log(f"[{self.completed_batch_count + 1}/{self.total_batch_count}] {job.label} [{job.video_quality}/{job.audio_quality}]")
 
             try:
+                if self.cancel_all_flag or job.status == "canceled":
+                    raise InterruptedError("Episode cancelled")
+
                 client = self.client_factory()
                 info = None
                 try:
@@ -627,6 +666,11 @@ class DownloadQueue:
                             job.series_title = info.episode_metadata.series_title
                 except Exception as ex:
                     self.log(f"metadata fetch warning for {job.ep_id}: {ex}")
+
+                # Ensure cancel_event is clean before starting download unless cancel was requested
+                # for THIS job or cancel_all
+                if self.cancel_all_flag or job.status == "canceled":
+                    raise InterruptedError("Episode cancelled")
 
                 def _cb(title, cur, tot, speed, status):
                     self._update_progress(job, cur, tot, speed, status)
@@ -671,13 +715,25 @@ class DownloadQueue:
                     raise RuntimeError(f"Download finished but output file missing: {output_file}")
 
             except Exception as e:
-                if self.cancel_event.is_set() or isinstance(e, InterruptedError) or self.cancel_all_flag:
+                if self.cancel_event.is_set() or isinstance(e, InterruptedError) or self.cancel_all_flag or job.status == "canceled":
                     job.status = "canceled"
                     job.finished_at = time.time()
                     with self.lock:
                         self.history.append(job)
                         if len(self.history) > self.max_history:
                             self.history.pop(0)
+                        if not self.cancel_all_flag:
+                            # Shrink total batch volume for canceled episode
+                            self.total_batch_count = max(
+                                self.completed_batch_count,
+                                self.total_batch_count - 1,
+                            )
+                            tot_batch = max(1, self.total_batch_count)
+                            self.overall_pct = round((self.completed_batch_count / tot_batch) * 100, 1)
+                            if len(self.queue) > 0:
+                                self.last_status = "running"
+                            else:
+                                self.last_status = "canceled" if self.completed_batch_count == 0 else "completed"
                     self.log(f"canceled: {job.label}")
                 else:
                     job.status = "failed"
@@ -688,3 +744,8 @@ class DownloadQueue:
                         if len(self.history) > self.max_history:
                             self.history.pop(0)
                     self.log(f"failed: {job.label} — {e}")
+            finally:
+                with self.lock:
+                    self.active_job = None
+                    if not self.cancel_all_flag:
+                        self.cancel_event.clear()

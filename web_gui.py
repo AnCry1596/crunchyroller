@@ -395,14 +395,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"success": True, "status": "skipped"})
             return
 
-        elif path == "/api/download/cancel":
+        elif path in ("/api/download/cancel", "/api/download/cancel-current"):
+            QUEUE.cancel_current()
+            DOWNLOAD_CANCEL_EVENT.set()
+            DOWNLOAD_PAUSE_EVENT.set()
+            with LOCK:
+                if QUEUE.queued_count == 0 and not QUEUE.active_job:
+                    STATE["download"]["status"] = "canceled"
+                STATE["download"]["speed"] = ""
+            _log("active episode cancelled by user")
+            self._json({"success": True, "status": "canceled"})
+            return
+
+        elif path == "/api/download/cancel-all":
             QUEUE.cancel_all()
             DOWNLOAD_CANCEL_EVENT.set()
             DOWNLOAD_PAUSE_EVENT.set()
             with LOCK:
                 STATE["download"]["status"] = "canceled"
                 STATE["download"]["speed"] = ""
-            _log("download cancelled by user")
+            _log("all downloads cancelled by user")
             self._json({"success": True, "status": "canceled"})
             return
 
@@ -652,18 +664,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json({"success": True, "status": "running"})
 
         elif path == "/api/download/skip":
-            QUEUE.cancel_current()
+            job_id = str(data.get("id") or data.get("job_id") or "").strip() or None
+            QUEUE.cancel_current(job_id=job_id)
             _log("active episode skipped by user")
             self._json({"success": True, "status": "skipped"})
 
-        elif path == "/api/download/cancel":
+        elif path in ("/api/download/cancel", "/api/download/cancel-current"):
+            if data.get("all") or data.get("cancel_all"):
+                QUEUE.cancel_all()
+                DOWNLOAD_CANCEL_EVENT.set()
+                DOWNLOAD_PAUSE_EVENT.set()
+                with LOCK:
+                    STATE["download"]["status"] = "canceled"
+                    STATE["download"]["speed"] = ""
+                _log("all downloads cancelled by user")
+                self._json({"success": True, "status": "canceled"})
+            else:
+                job_id = str(data.get("id") or data.get("job_id") or "").strip() or None
+                QUEUE.cancel_current(job_id=job_id)
+                DOWNLOAD_CANCEL_EVENT.set()
+                DOWNLOAD_PAUSE_EVENT.set()
+                with LOCK:
+                    if QUEUE.queued_count == 0 and not QUEUE.active_job:
+                        STATE["download"]["status"] = "canceled"
+                    STATE["download"]["speed"] = ""
+                _log("active episode cancelled by user")
+                self._json({"success": True, "status": "canceled"})
+
+        elif path == "/api/download/cancel-all":
             QUEUE.cancel_all()
             DOWNLOAD_CANCEL_EVENT.set()
-            DOWNLOAD_PAUSE_EVENT.set()  # unblock if paused so workers exit immediately
+            DOWNLOAD_PAUSE_EVENT.set()
             with LOCK:
                 STATE["download"]["status"] = "canceled"
                 STATE["download"]["speed"] = ""
-            _log("download cancelled by user")
+            _log("all downloads cancelled by user")
             self._json({"success": True, "status": "canceled"})
 
         elif path == "/api/queue/remove":

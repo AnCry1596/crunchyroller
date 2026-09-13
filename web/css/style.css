@@ -1217,10 +1217,7 @@ hr.div {
 .queue-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  max-height: 280px;
-  overflow-y: auto;
-  padding-right: 2px;
+  gap: 10px;
 }
 
 .queue-item {
@@ -1557,14 +1554,39 @@ hr.div {
 }
 
 .task-body {
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-  background: rgba(0, 0, 0, 0.25);
-  max-height: 260px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.28);
+  max-height: 380px;
   overflow-y: auto;
-  padding: 6px 8px 8px 8px;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  padding: 8px 10px 10px 10px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+/* Custom sleek modern scrollbar for task-body matching dark cyberpunk theme */
+.task-body::-webkit-scrollbar {
+  display: block !important;
+  width: 5px !important;
+  height: 5px !important;
+}
+
+.task-body::-webkit-scrollbar-track {
+  background: transparent !important;
+}
+
+.task-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16) !important;
+  border-radius: 99px !important;
+  transition: background 0.2s ease !important;
+}
+
+.task-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35) !important;
 }
 
 .task-card.collapsed .task-body {
@@ -1575,38 +1597,66 @@ hr.div {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 5px 8px;
-  border-radius: 5px;
-  border: 1px solid rgba(255, 255, 255, 0.03);
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.04);
   background: rgba(255, 255, 255, 0.015);
-  font-size: 0.74rem;
-  transition: background 0.12s ease;
+  font-size: 0.76rem;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.2s ease, opacity 0.2s ease;
 }
 
 .task-ep-row:hover {
   background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.09);
 }
 
 .task-ep-row.status-running {
-  border-color: rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.02);
+}
+
+.task-ep-row.status-completed {
+  border-color: rgba(34, 197, 94, 0.12);
+}
+
+.task-ep-row.status-failed,
+.task-ep-row.status-canceled {
+  opacity: 0.75;
 }
 
 .task-ep-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
   flex: 1;
 }
 
-.task-ep-label {
+.task-ep-idx {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--dim);
+  font-family: var(--font-mono, monospace);
+  font-variant-numeric: tabular-nums;
+  min-width: 26px;
+  flex-shrink: 0;
+}
+
+.task-ep-title {
   color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 0.74rem;
+  min-width: 0;
+}
+
+.task-ep-row.status-running .task-ep-title {
+  color: #fff;
+  font-weight: 600;
 }
 
 .ep-ico {
@@ -1626,22 +1676,89 @@ hr.div {
 .task-ep-right {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-shrink: 0;
 }
 
+.task-ep-status-pill {
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--dim);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.task-ep-status-pill.status-running {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.task-ep-status-pill.status-completed {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+
+.task-ep-status-pill.status-paused {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.2);
+}
+
+.task-ep-status-pill.status-canceled,
+.task-ep-status-pill.status-failed {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+
 .task-ep-prog {
-  font-size: 0.65rem;
+  font-size: 0.66rem;
   font-family: var(--font-mono, monospace);
   color: var(--white);
   font-weight: 600;
-  padding: 1px 5px;
+  padding: 2px 6px;
   background: rgba(255, 255, 255, 0.08);
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
 .task-ep-size {
-  font-size: 0.65rem;
+  font-size: 0.66rem;
   font-family: var(--font-mono, monospace);
   color: var(--dim);
+}
+
+.task-ep-remove-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--dim);
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.72rem;
+  line-height: 1;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.task-ep-remove-btn:hover {
+  color: #ff5555;
+  background: rgba(255, 85, 85, 0.12);
+  border-color: rgba(255, 85, 85, 0.3);
+}
+
+button:disabled,
+.btn-s:disabled {
+  opacity: 0.55 !important;
+  cursor: not-allowed !important;
+  pointer-events: none !important;
 }

@@ -797,27 +797,107 @@ async function togglePause() {
 }
 
 async function skipDl() {
-  if (!confirm('Skip current episode and proceed to next in queue?')) return;
-  const res = await api('/api/download/skip', {});
-  if (res && res.success) {
-    toast('Skipped active episode');
-    startPolling();
-  } else {
-    toast(res?.error || 'failed to skip', 'err');
+  const btn = document.getElementById('dl-skip-btn');
+  if (btn) {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = 'skipping...';
+  }
+  try {
+    const res = await api('/api/download/skip', {});
+    if (res && res.success) {
+      toast('Skipped active episode');
+      startPolling();
+      const state = await api('/api/state');
+      if (state && state.download) {
+        updateProgressPanel(state.download);
+      }
+    } else {
+      toast(res?.error || 'failed to skip', 'err');
+    }
+  } catch (e) {
+    console.error('Skip episode error:', e);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'skip';
+    }
+  }
+}
+
+async function cancelCurrentEp() {
+  const btn = document.getElementById('dl-cancel-btn');
+  if (btn) {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = 'canceling...';
+  }
+  try {
+    const res = await api('/api/download/cancel-current', {});
+    if (res && res.success) {
+      toast('Active episode canceled');
+      startPolling();
+      const state = await api('/api/state');
+      if (state && state.download) {
+        updateProgressPanel(state.download);
+      }
+    } else {
+      toast(res?.error || 'failed to cancel episode', 'err');
+    }
+  } catch (e) {
+    console.error('Cancel episode error:', e);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'cancel ep';
+    }
   }
 }
 
 async function cancelDl() {
-  if (!confirm('Are you sure you want to cancel downloads and clear queue?')) return;
-  const res = await api('/api/download/cancel', {});
-  if (res && res.success) {
-    toast('downloads cancelled', 'err');
-  } else {
-    toast(res?.error || 'failed to cancel', 'err');
-  }
+  await cancelCurrentEp();
 }
 
-async function removeFromQueue(jobId) {
+async function removeFromQueue(jobId, epRow) {
+  // Immediately update UI: animate out row, update total volume and circular meter
+  if (epRow) {
+    const taskCard = epRow.closest('.task-card');
+    if (taskCard) {
+      const epCountEl = taskCard.querySelector('.task-ep-count');
+      if (epCountEl) {
+        const match = epCountEl.textContent.match(/(\d+)\s*\/\s*(\d+)/);
+        if (match) {
+          const completed = parseInt(match[1], 10);
+          const oldTotal = parseInt(match[2], 10);
+          const newTotal = Math.max(completed, oldTotal - 1);
+          epCountEl.textContent = `${completed} / ${newTotal} eps`;
+
+          // Recalculate meter percentage immediately
+          const newPct = newTotal > 0 ? Math.min(100, Math.round((completed / newTotal) * 100)) : 0;
+          const dashoffset = (100 - newPct).toFixed(1);
+          const circleProg = taskCard.querySelector('.circle-prog');
+          const circleText = taskCard.querySelector('.circle-text');
+          if (circleProg) circleProg.setAttribute('stroke-dashoffset', dashoffset);
+          if (circleText) {
+            circleText.textContent = (newPct >= 100 && newTotal > 0) ? '✓' : `${newPct}%`;
+          }
+        }
+      }
+    }
+    epRow.style.opacity = '0';
+    epRow.style.transform = 'translateX(8px)';
+    epRow.style.transition = 'all 0.2s ease';
+    setTimeout(() => {
+      if (epRow && epRow.parentNode) epRow.remove();
+    }, 200);
+  }
+
+  const qBadge = document.getElementById('queue-badge');
+  if (qBadge) {
+    const curVal = parseInt(qBadge.textContent || '0', 10);
+    if (curVal > 0) qBadge.textContent = String(curVal - 1);
+  }
+
   const res = await api('/api/queue/remove', { id: jobId });
   if (res && res.success) {
     toast('Removed from queue');
@@ -905,6 +985,12 @@ function updateProgressPanel(dl) {
         pauseBtn.textContent = 'pause';
         pauseBtn.dataset.action = 'pause';
       }
+      if (!cancelBtn.disabled) {
+        cancelBtn.textContent = 'cancel ep';
+      }
+      if (skipBtn && !skipBtn.disabled) {
+        skipBtn.textContent = 'skip';
+      }
     } else {
       pauseBtn.style.display = 'none';
       cancelBtn.style.display = 'none';
@@ -987,176 +1073,33 @@ function updateProgressPanel(dl) {
         const queuedCount = dl.queued_count !== undefined ? dl.queued_count : queue.length;
         qBadge.textContent = String(queuedCount);
       }
-      qList.innerHTML = '';
 
       if (tasks.length > 0) {
+        // Collect task IDs currently present in state
+        const taskIdsInState = new Set(tasks.map(t => String(t.id)));
+
+        // Remove DOM task cards that are no longer in state
+        Array.from(qList.querySelectorAll('.task-card')).forEach(card => {
+          if (!taskIdsInState.has(card.dataset.taskId)) {
+            card.remove();
+          }
+        });
+
+        // Clean up fallback flat queue items if we now have task cards
+        Array.from(qList.querySelectorAll('.queue-item')).forEach(item => item.remove());
+
         tasks.forEach((task) => {
-          const card = document.createElement('div');
-          const isCollapsed = collapsedTaskIds.has(task.id);
-          card.className = `task-card ${task.status}` + (isCollapsed ? ' collapsed' : '');
-          card.dataset.taskId = task.id;
-
-          const header = document.createElement('div');
-          header.className = 'task-header';
-          header.onclick = () => toggleTaskAccordion(task.id);
-
-          const left = document.createElement('div');
-          left.className = 'task-left';
-
-          // Circular progress meter
-          const pct = Math.max(0, Math.min(100, Number(task.progress_pct) || 0));
-          const dashoffset = (100 - pct).toFixed(1);
-          let meterText = Math.round(pct) + '%';
-          if (task.status === 'completed' || (pct >= 100 && task.status !== 'failed' && task.status !== 'canceled')) {
-            meterText = '✓';
-          } else if (task.status === 'canceled' || task.status === 'failed') {
-            meterText = '✕';
-          }
-
-          const meterWrap = document.createElement('div');
-          meterWrap.className = 'task-meter-wrap';
-          meterWrap.innerHTML = `
-            <svg class="task-circle-meter ${task.status}" viewBox="0 0 36 36">
-              <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-              <path class="circle-prog" stroke-dasharray="100 100" stroke-dashoffset="${dashoffset}" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
-              <text x="18" y="20.5" class="circle-text">${meterText}</text>
-            </svg>
-          `;
-
-          const titleGroup = document.createElement('div');
-          titleGroup.className = 'task-title-group';
-
-          const animeTitle = document.createElement('div');
-          animeTitle.className = 'task-anime-title';
-          animeTitle.textContent = task.series_title || task.title || 'Anime Download';
-          animeTitle.title = animeTitle.textContent;
-
-          const metaRow = document.createElement('div');
-          metaRow.className = 'task-meta-row';
-
-          const statusPill = document.createElement('span');
-          statusPill.className = `task-status-pill ${task.status}`;
-          statusPill.textContent = task.status;
-          metaRow.appendChild(statusPill);
-
-          const epCount = document.createElement('span');
-          epCount.className = 'task-ep-count';
-          epCount.textContent = `${task.completed || 0} / ${task.total || 0} eps`;
-          metaRow.appendChild(epCount);
-
-          if (task.video_quality) {
-            const vqTag = document.createElement('span');
-            vqTag.className = 'task-tag';
-            vqTag.textContent = task.video_quality;
-            metaRow.appendChild(vqTag);
-          }
-
-          if (task.audio_langs && task.audio_langs.length) {
-            const alTag = document.createElement('span');
-            alTag.className = 'task-tag';
-            alTag.textContent = task.audio_langs.join(', ');
-            metaRow.appendChild(alTag);
-          }
-
-          titleGroup.append(animeTitle, metaRow);
-          left.append(meterWrap, titleGroup);
-
-          const right = document.createElement('div');
-          right.className = 'task-right';
-
-          const cancelBtn = document.createElement('button');
-          cancelBtn.className = 'task-cancel-btn';
-          cancelBtn.innerHTML = '✕';
-          cancelBtn.title = (task.status === 'completed' || task.status === 'canceled') ? 'Dismiss task' : 'Cancel task';
-          cancelBtn.onclick = (e) => cancelTask(task.id, e);
-
-          const chevron = document.createElement('span');
-          chevron.className = 'task-chevron';
-          chevron.textContent = '▼';
-
-          right.append(cancelBtn, chevron);
-          header.append(left, right);
-
-          const body = document.createElement('div');
-          body.className = 'task-body';
-
-          const episodes = task.episodes || [];
-          if (episodes.length === 0) {
-            const emptyMsg = document.createElement('div');
-            emptyMsg.style.cssText = 'color:var(--dim);font-size:0.72rem;padding:4px;';
-            emptyMsg.textContent = 'No episodes';
-            body.appendChild(emptyMsg);
+          let card = qList.querySelector(`.task-card[data-task-id="${task.id}"]`);
+          if (!card) {
+            card = createTaskCard(task);
+            qList.appendChild(card);
           } else {
-            episodes.forEach((ep) => {
-              const epRow = document.createElement('div');
-              epRow.className = `task-ep-row status-${ep.status}`;
-
-              const epLeft = document.createElement('div');
-              epLeft.className = 'task-ep-left';
-
-              const epIco = document.createElement('span');
-              if (ep.status === 'completed') {
-                epIco.className = 'ep-ico ep-ico-done';
-                epIco.textContent = '✓';
-              } else if (ep.status === 'running') {
-                epIco.className = 'ep-ico ep-ico-run';
-                epIco.innerHTML = '<span class="spin"></span>';
-              } else if (ep.status === 'paused') {
-                epIco.className = 'ep-ico ep-ico-paused';
-                epIco.textContent = '⏸';
-              } else if (ep.status === 'canceled') {
-                epIco.className = 'ep-ico ep-ico-err';
-                epIco.textContent = '✕';
-              } else if (ep.status === 'failed') {
-                epIco.className = 'ep-ico ep-ico-err';
-                epIco.textContent = '!';
-              } else {
-                epIco.className = 'ep-ico ep-ico-queued';
-                epIco.textContent = '⋯';
-              }
-
-              const epLabel = document.createElement('span');
-              epLabel.className = 'task-ep-label';
-              epLabel.textContent = ep.label || ep.title || ep.ep_id;
-              epLabel.title = epLabel.textContent;
-
-              epLeft.append(epIco, epLabel);
-
-              const epRight = document.createElement('div');
-              epRight.className = 'task-ep-right';
-
-              if (ep.status === 'running' && ep.progress !== undefined) {
-                const epProg = document.createElement('span');
-                epProg.className = 'task-ep-prog';
-                epProg.textContent = `${Number(ep.progress).toFixed(0)}%`;
-                epRight.appendChild(epProg);
-              } else if (ep.status === 'completed' && ep.file_size_mb) {
-                const epSize = document.createElement('span');
-                epSize.className = 'task-ep-size';
-                epSize.textContent = `${ep.file_size_mb} MB`;
-                epRight.appendChild(epSize);
-              } else if (ep.status === 'queued') {
-                const epRemove = document.createElement('button');
-                epRemove.className = 'queue-remove-btn';
-                epRemove.innerHTML = '✕';
-                epRemove.title = 'Remove episode from queue';
-                epRemove.onclick = (e) => {
-                  e.stopPropagation();
-                  removeFromQueue(ep.id || ep.ep_id);
-                };
-                epRight.appendChild(epRemove);
-              }
-
-              epRow.append(epLeft, epRight);
-              body.appendChild(epRow);
-            });
+            updateTaskCard(card, task);
           }
-
-          card.append(header, body);
-          qList.appendChild(card);
         });
       } else {
         // Fallback flat queue items rendering
+        qList.innerHTML = '';
         queue.forEach((item, index) => {
           const row = document.createElement('div');
           row.className = 'queue-item';
@@ -1197,7 +1140,7 @@ function updateProgressPanel(dl) {
           removeBtn.title = 'Remove from queue';
           removeBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            removeFromQueue(item.id || item.ep_id);
+            removeFromQueue(item.id || item.ep_id, row);
           });
 
           row.append(num, info, removeBtn);
@@ -1206,6 +1149,323 @@ function updateProgressPanel(dl) {
       }
     } else {
       qPanel.style.display = 'none';
+    }
+  }
+}
+
+function getCleanEpTitle(ep) {
+  if (ep.title && !ep.title.match(/^S\d+E\d+\s*—/i)) {
+    return ep.title;
+  }
+  if (ep.label) {
+    const parts = ep.label.split(/—|-/);
+    if (parts.length > 1) {
+      return parts.slice(1).join('—').trim();
+    }
+    return ep.label;
+  }
+  return ep.title || ep.ep_id || 'Episode';
+}
+
+function getEpIndexLabel(ep, epIdx) {
+  if (ep.episode_number && Number(ep.episode_number) > 0) {
+    return `#${ep.episode_number}`;
+  }
+  return `#${epIdx + 1}`;
+}
+
+function updateEpIcon(epIco, status) {
+  if (status === 'completed') {
+    epIco.className = 'ep-ico ep-ico-done';
+    epIco.textContent = '✓';
+  } else if (status === 'running') {
+    epIco.className = 'ep-ico ep-ico-run';
+    epIco.innerHTML = '<span class="spin"></span>';
+  } else if (status === 'paused') {
+    epIco.className = 'ep-ico ep-ico-paused';
+    epIco.textContent = '⏸';
+  } else if (status === 'canceled') {
+    epIco.className = 'ep-ico ep-ico-err';
+    epIco.textContent = '✕';
+  } else if (status === 'failed') {
+    epIco.className = 'ep-ico ep-ico-err';
+    epIco.textContent = '!';
+  } else {
+    epIco.className = 'ep-ico ep-ico-queued';
+    epIco.textContent = '⋯';
+  }
+}
+
+function updateEpRight(right, ep, epRow) {
+  right.innerHTML = '';
+
+  if (ep.status === 'running') {
+    if (ep.progress !== undefined) {
+      const epProg = document.createElement('span');
+      epProg.className = 'task-ep-prog';
+      epProg.textContent = `${Number(ep.progress).toFixed(0)}%`;
+      right.appendChild(epProg);
+    }
+    const statusPill = document.createElement('span');
+    statusPill.className = 'task-ep-status-pill status-running';
+    statusPill.textContent = 'downloading';
+    right.appendChild(statusPill);
+  } else if (ep.status === 'completed') {
+    if (ep.file_size_mb) {
+      const epSize = document.createElement('span');
+      epSize.className = 'task-ep-size';
+      epSize.textContent = `${ep.file_size_mb} MB`;
+      right.appendChild(epSize);
+    }
+    const statusPill = document.createElement('span');
+    statusPill.className = 'task-ep-status-pill status-completed';
+    statusPill.textContent = 'done';
+    right.appendChild(statusPill);
+  } else if (ep.status === 'paused') {
+    const statusPill = document.createElement('span');
+    statusPill.className = 'task-ep-status-pill status-paused';
+    statusPill.textContent = 'paused';
+    right.appendChild(statusPill);
+  } else if (ep.status === 'queued') {
+    const statusPill = document.createElement('span');
+    statusPill.className = 'task-ep-status-pill status-queued';
+    statusPill.textContent = 'queued';
+    right.appendChild(statusPill);
+
+    const epRemove = document.createElement('button');
+    epRemove.className = 'task-ep-remove-btn';
+    epRemove.innerHTML = '✕';
+    epRemove.title = 'Remove episode from queue';
+    epRemove.onclick = (e) => {
+      e.stopPropagation();
+      removeFromQueue(ep.id || ep.ep_id, epRow);
+    };
+    right.appendChild(epRemove);
+  } else if (ep.status === 'canceled') {
+    const statusPill = document.createElement('span');
+    statusPill.className = 'task-ep-status-pill status-canceled';
+    statusPill.textContent = 'canceled';
+    right.appendChild(statusPill);
+  } else if (ep.status === 'failed') {
+    const statusPill = document.createElement('span');
+    statusPill.className = 'task-ep-status-pill status-failed';
+    statusPill.textContent = 'failed';
+    right.appendChild(statusPill);
+  }
+}
+
+function renderEpisodeRow(ep, epIdx, task) {
+  const epKey = String(ep.id || ep.ep_id);
+  const row = document.createElement('div');
+  row.className = `task-ep-row status-${ep.status}`;
+  row.dataset.epId = epKey;
+
+  const left = document.createElement('div');
+  left.className = 'task-ep-left';
+
+  const epIco = document.createElement('span');
+  epIco.className = 'ep-ico';
+  updateEpIcon(epIco, ep.status);
+
+  const epIdxSpan = document.createElement('span');
+  epIdxSpan.className = 'task-ep-idx';
+  epIdxSpan.textContent = getEpIndexLabel(ep, epIdx);
+
+  const epTitle = document.createElement('span');
+  epTitle.className = 'task-ep-title';
+  epTitle.textContent = getCleanEpTitle(ep);
+  epTitle.title = ep.label || ep.title || ep.ep_id;
+
+  left.append(epIco, epIdxSpan, epTitle);
+
+  const right = document.createElement('div');
+  right.className = 'task-ep-right';
+  updateEpRight(right, ep, row);
+
+  row.append(left, right);
+  return row;
+}
+
+function updateEpisodeRow(epRow, ep, epIdx, task) {
+  epRow.className = `task-ep-row status-${ep.status}`;
+
+  const epIco = epRow.querySelector('.ep-ico');
+  if (epIco) updateEpIcon(epIco, ep.status);
+
+  const epIdxSpan = epRow.querySelector('.task-ep-idx');
+  if (epIdxSpan) epIdxSpan.textContent = getEpIndexLabel(ep, epIdx);
+
+  const epTitle = epRow.querySelector('.task-ep-title');
+  if (epTitle) {
+    epTitle.textContent = getCleanEpTitle(ep);
+    epTitle.title = ep.label || ep.title || ep.ep_id;
+  }
+
+  const right = epRow.querySelector('.task-ep-right');
+  if (right) updateEpRight(right, ep, epRow);
+}
+
+function createTaskCard(task) {
+  const isCollapsed = collapsedTaskIds.has(task.id);
+  const card = document.createElement('div');
+  card.className = `task-card ${task.status}` + (isCollapsed ? ' collapsed' : '');
+  card.dataset.taskId = task.id;
+
+  const header = document.createElement('div');
+  header.className = 'task-header';
+  header.onclick = () => toggleTaskAccordion(task.id);
+
+  const left = document.createElement('div');
+  left.className = 'task-left';
+
+  const pct = Math.max(0, Math.min(100, Number(task.progress_pct) || 0));
+  const dashoffset = (100 - pct).toFixed(1);
+  let meterText = Math.round(pct) + '%';
+  if (task.status === 'completed' || (pct >= 100 && task.status !== 'failed' && task.status !== 'canceled')) {
+    meterText = '✓';
+  } else if (task.status === 'canceled' || task.status === 'failed') {
+    meterText = '✕';
+  }
+
+  const meterWrap = document.createElement('div');
+  meterWrap.className = 'task-meter-wrap';
+  meterWrap.innerHTML = `
+    <svg class="task-circle-meter ${task.status}" viewBox="0 0 36 36">
+      <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+      <path class="circle-prog" stroke-dasharray="100 100" stroke-dashoffset="${dashoffset}" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+      <text x="18" y="20.5" class="circle-text">${meterText}</text>
+    </svg>
+  `;
+
+  const titleGroup = document.createElement('div');
+  titleGroup.className = 'task-title-group';
+
+  const animeTitle = document.createElement('div');
+  animeTitle.className = 'task-anime-title';
+  animeTitle.textContent = task.series_title || task.title || 'Anime Download';
+  animeTitle.title = animeTitle.textContent;
+
+  const metaRow = document.createElement('div');
+  metaRow.className = 'task-meta-row';
+
+  const statusPill = document.createElement('span');
+  statusPill.className = `task-status-pill ${task.status}`;
+  statusPill.textContent = task.status;
+  metaRow.appendChild(statusPill);
+
+  const epCount = document.createElement('span');
+  epCount.className = 'task-ep-count';
+  epCount.textContent = `${task.completed || 0} / ${task.total || 0} eps`;
+  metaRow.appendChild(epCount);
+
+  if (task.video_quality) {
+    const vqTag = document.createElement('span');
+    vqTag.className = 'task-tag';
+    vqTag.textContent = task.video_quality;
+    metaRow.appendChild(vqTag);
+  }
+
+  if (task.audio_langs && task.audio_langs.length) {
+    const alTag = document.createElement('span');
+    alTag.className = 'task-tag';
+    alTag.textContent = task.audio_langs.join(', ');
+    metaRow.appendChild(alTag);
+  }
+
+  titleGroup.append(animeTitle, metaRow);
+  left.append(meterWrap, titleGroup);
+
+  const right = document.createElement('div');
+  right.className = 'task-right';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'task-cancel-btn';
+  cancelBtn.innerHTML = '✕';
+  cancelBtn.title = (task.status === 'completed' || task.status === 'canceled') ? 'Dismiss task' : 'Cancel task';
+  cancelBtn.onclick = (e) => cancelTask(task.id, e);
+
+  const chevron = document.createElement('span');
+  chevron.className = 'task-chevron';
+  chevron.textContent = '▼';
+
+  right.append(cancelBtn, chevron);
+  header.append(left, right);
+
+  const body = document.createElement('div');
+  body.className = 'task-body';
+
+  const episodes = task.episodes || [];
+  if (episodes.length === 0) {
+    const emptyMsg = document.createElement('div');
+    emptyMsg.style.cssText = 'color:var(--dim);font-size:0.72rem;padding:4px;';
+    emptyMsg.textContent = 'No episodes';
+    body.appendChild(emptyMsg);
+  } else {
+    episodes.forEach((ep, epIdx) => {
+      body.appendChild(renderEpisodeRow(ep, epIdx, task));
+    });
+  }
+
+  card.append(header, body);
+  return card;
+}
+
+function updateTaskCard(card, task) {
+  const isCollapsed = collapsedTaskIds.has(task.id);
+  card.className = `task-card ${task.status}` + (isCollapsed ? ' collapsed' : '');
+
+  const pct = Math.max(0, Math.min(100, Number(task.progress_pct) || 0));
+  const dashoffset = (100 - pct).toFixed(1);
+  let meterText = Math.round(pct) + '%';
+  if (task.status === 'completed' || (pct >= 100 && task.status !== 'failed' && task.status !== 'canceled')) {
+    meterText = '✓';
+  } else if (task.status === 'canceled' || task.status === 'failed') {
+    meterText = '✕';
+  }
+
+  const meterSvg = card.querySelector('.task-circle-meter');
+  if (meterSvg) meterSvg.setAttribute('class', `task-circle-meter ${task.status}`);
+
+  const circleProg = card.querySelector('.circle-prog');
+  if (circleProg) circleProg.setAttribute('stroke-dashoffset', dashoffset);
+
+  const circleText = card.querySelector('.circle-text');
+  if (circleText) circleText.textContent = meterText;
+
+  const statusPill = card.querySelector('.task-status-pill');
+  if (statusPill) {
+    statusPill.className = `task-status-pill ${task.status}`;
+    statusPill.textContent = task.status;
+  }
+
+  const epCount = card.querySelector('.task-ep-count');
+  if (epCount) {
+    epCount.textContent = `${task.completed || 0} / ${task.total || 0} eps`;
+  }
+
+  const body = card.querySelector('.task-body');
+  if (body) {
+    const episodes = task.episodes || [];
+    if (episodes.length === 0) {
+      body.innerHTML = '<div style="color:var(--dim);font-size:0.72rem;padding:4px;">No episodes</div>';
+    } else {
+      const epIdsInState = new Set(episodes.map(ep => String(ep.id || ep.ep_id)));
+      Array.from(body.querySelectorAll('.task-ep-row')).forEach(row => {
+        if (!epIdsInState.has(row.dataset.epId)) {
+          row.remove();
+        }
+      });
+
+      episodes.forEach((ep, epIdx) => {
+        const epKey = String(ep.id || ep.ep_id);
+        let epRow = body.querySelector(`.task-ep-row[data-ep-id="${epKey}"]`);
+        if (!epRow) {
+          epRow = renderEpisodeRow(ep, epIdx, task);
+          body.appendChild(epRow);
+        } else {
+          updateEpisodeRow(epRow, ep, epIdx, task);
+        }
+      });
     }
   }
 }
