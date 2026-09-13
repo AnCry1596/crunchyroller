@@ -149,6 +149,27 @@ def _parse_playback_response(data: Dict[str, Any], debug: bool = False) -> Playb
     return PlaybackStream(manifest_url=manifest_url, subtitles=subtitles, token=token)
 
 
+# HTTP statuses on which Crunchyroll reports the KAT-3002 stream-limit error.
+_STREAM_LIMIT_STATUSES = (400, 403, 409, 429)
+
+
+def _is_stream_limit_response(response) -> bool:
+    """Return True only for genuine KAT-3002 stream-limit responses.
+
+    A bare "3002" substring on a 200 OK body (episode title, GUID, timestamp)
+    must NOT trigger a session purge, so both the status code and a
+    structured error marker are required.
+    """
+    if getattr(response, "status_code", None) not in _STREAM_LIMIT_STATUSES:
+        return False
+    text = getattr(response, "text", "") or ""
+    return (
+        "KAT-3002" in text
+        or '"code": 3002' in text
+        or '"code":"KAT-3002"' in text
+    )
+
+
 def get_episode(
     client: CrunchyrollHttpClient,
     content_id: str,
@@ -188,7 +209,7 @@ def get_episode(
     started_at = time.monotonic()
     try:
         response = client.do_request("GET", android_url, headers=android_headers)
-        if "3002" in getattr(response, "text", ""):
+        if _is_stream_limit_response(response):
             print("[playback] Stream limit detected (3002) during Android TV request; auto-purging orphaned sessions...", flush=True)
             purge_orphan_streams(client)
             time.sleep(1.0)
@@ -220,7 +241,7 @@ def get_episode(
     web_started_at = time.monotonic()
     try:
         response = client.do_request("GET", web_url)
-        if "3002" in getattr(response, "text", ""):
+        if _is_stream_limit_response(response):
             print("[playback] Stream limit detected (3002) during web playback request; auto-purging orphaned sessions...", flush=True)
             purge_orphan_streams(client)
             time.sleep(1.0)
@@ -434,6 +455,51 @@ def get_episode_info(
     return EpisodeInfo(episode_metadata=ep_meta, title=title, subtitles=subs)
 
 
+_CMS_PAGE_LIMIT = 100
+_CMS_MAX_PAGES = 25
+
+
+def _paginate_cms(
+    client: CrunchyrollHttpClient,
+    base_url: str,
+    limit: int = _CMS_PAGE_LIMIT,
+    max_pages: int = _CMS_MAX_PAGES,
+) -> List[Dict[str, Any]]:
+    """Fetch all pages of a Crunchyroll CMS listing endpoint.
+
+    The CMS API caps each response at `limit` records, so series/seasons with
+    more than one page of episodes would otherwise be silently truncated.
+    The caller must supply `base_url` with its query parameters already set;
+    `start` and `limit` are appended here.
+    """
+    items: List[Dict[str, Any]] = []
+    start = 0
+
+    for _ in range(max_pages):
+        page_url = f"{base_url}&start={start}&limit={limit}"
+        resp = client.do_request("GET", page_url)
+        resp.raise_for_status()
+
+        data = resp.json()
+        page = data.get("data", []) or []
+        items.extend(page)
+
+        if not page or len(page) < limit:
+            break
+
+        total = data.get("total")
+        try:
+            total_val = int(total) if total is not None else None
+        except (TypeError, ValueError):
+            total_val = None
+        if total_val is not None and len(items) >= total_val:
+            break
+
+        start += limit
+
+    return items
+
+
 def get_seasons(
     client: CrunchyrollHttpClient,
     series_id: str,
@@ -441,15 +507,12 @@ def get_seasons(
     sub_locale: str = "en-US",
 ) -> List[Season]:
     """list seasons for a series"""
-    url = (
+    base_url = (
         f"https://www.crunchyroll.com/content/v2/cms/series/{series_id}/seasons"
         f"?preferred_audio_language={audio_locale}&locale={sub_locale}"
     )
-    resp = client.do_request("GET", url)
-    resp.raise_for_status()
 
-    data = resp.json()
-    items = data.get("data", [])
+    items = _paginate_cms(client, base_url)
 
     seasons = []
     for item in items:
@@ -472,15 +535,12 @@ def get_season_episodes(
     sub_locale: str = "en-US",
 ) -> List[SeasonEpisode]:
     """list all episodes in a season"""
-    url = (
+    base_url = (
         f"https://www.crunchyroll.com/content/v2/cms/seasons/{season_id}/episodes"
         f"?preferred_audio_language={audio_locale}&locale={sub_locale}"
     )
-    resp = client.do_request("GET", url)
-    resp.raise_for_status()
 
-    data = resp.json()
-    items = data.get("data", [])
+    items = _paginate_cms(client, base_url)
 
     episodes = []
     for seq_idx, item in enumerate(items, start=1):

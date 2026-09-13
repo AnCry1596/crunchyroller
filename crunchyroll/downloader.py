@@ -612,7 +612,7 @@ def _keys_for_adaptation_set(
         return keys
     normalized_keys = {}
     for candidate, value in keys.items():
-        candidate_bytes = bytes(candidate).lower()
+        candidate_bytes = bytes(candidate)
         normalized_keys[candidate_bytes] = (candidate, value)
         if len(candidate_bytes) == 16:
             normalized_keys.setdefault(
@@ -622,7 +622,7 @@ def _keys_for_adaptation_set(
     selected = {}
     missing = []
     for kid in kids:
-        kid_bytes = bytes(kid).lower()
+        kid_bytes = bytes(kid)
         match = normalized_keys.get(kid_bytes)
         if match is None and len(kid_bytes) == 16:
             match = normalized_keys.get(uuid.UUID(bytes=kid_bytes).bytes_le)
@@ -1649,6 +1649,7 @@ def _download_episode_n_m3u8dl_re(
     )
 
     temp_dirs: List[str] = []
+    sub_tracks: List[MediaTrack] = []
 
     try:
         first_playback_id = versions[0].guid or base_content_id
@@ -1672,7 +1673,7 @@ def _download_episode_n_m3u8dl_re(
         active_streams[first_playback_id] = first_episode.token
 
         # ------------------------------------------------------------------
-        # 4. Subtitle discovery (unchanged logic)
+        # 4. Subtitle discovery
         # ------------------------------------------------------------------
         subtitle_map = _locale_map(first_episode.subtitles)
         primary_locale = (getattr(versions[0], "audio_locale", "") or "").lower()
@@ -1828,7 +1829,7 @@ def _download_episode_n_m3u8dl_re(
             raise RuntimeError("No Widevine keys returned from license server")
 
         # Temp dir for N_m3u8DL-RE output
-        primary_tmp = tempfile.mkdtemp(prefix="crunrun_primary_")
+        primary_tmp = tempfile.mkdtemp(prefix="cr_primary_")
         temp_dirs.append(primary_tmp)
         try:
             print("Downloading video + primary audio with N_m3u8DL-RE...")
@@ -1894,7 +1895,7 @@ def _download_episode_n_m3u8dl_re(
                 print(f"Warning: No keys for {track_title(version.audio_locale)}, skipping.")
                 continue
 
-            dub_tmp = tempfile.mkdtemp(prefix=f"crunrun_dub{i}_")
+            dub_tmp = tempfile.mkdtemp(prefix=f"cr_dub{i}_")
             temp_dirs.append(dub_tmp)
             dub_base = f"{base_name}_dub{i}"
             try:
