@@ -4,21 +4,40 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>crunchyroller</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3.3.0">
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=3.1.0">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css?v=3.3.0">
 </head>
 <body>
 
   <header>
     <div class="brand">
-      <img src="/logo.svg" alt="logo" class="brand-icon">
-      <span class="brand-title">crunchy<b>roller</b></span>
+      <img src="/logo.svg?v=3.3.0" alt="logo" class="brand-icon">
     </div>
+
+    <nav class="nav-tabs" id="nav-tabs">
+      <button class="nav-tab active" data-tab="downloads" onclick="switchTab('downloads')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+        <span>dashboard</span>
+      </button>
+      <button class="nav-tab" data-tab="settings" onclick="switchTab('settings')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        <span>settings</span>
+      </button>
+    </nav>
+
     <div class="header-right">
       <a href="https://github.com/Vure-sh/crunchyroller" target="_blank" rel="noopener noreferrer" class="btn-github-star" title="Star crunchyroller on GitHub">
-        <svg height="14" viewBox="0 0 16 16" width="14" fill="currentColor">
-          <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"></path>
+        <svg height="14" viewBox="0 0 16 16" width="14" fill="#ffffff">
+          <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.751.751 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"></path>
         </svg>
         <span>Star</span>
       </a>
@@ -31,178 +50,273 @@
 
   <main>
 
+    <!-- GitHub Star Banner -->
+    <div id="star-banner" class="star-banner" style="display:none;">
+      <div class="star-banner-left">
+        <span class="star-banner-icon">★</span>
+        <div class="star-banner-text">
+          <span class="star-banner-title">Enjoying crunchyroller?</span>
+          <span class="star-banner-desc">Please consider leaving a star on GitHub to support development!</span>
+        </div>
+      </div>
+      <div class="star-banner-actions">
+        <a href="https://github.com/Vure-sh/crunchyroller" target="_blank" rel="noopener noreferrer" class="btn-star-cta" onclick="dismissStarBanner(true)">
+          ★ Star on GitHub
+        </a>
+        <button class="btn-star-dismiss" onclick="dismissStarBanner(false)" title="Dismiss">✕</button>
+      </div>
+    </div>
+
     <div class="shell">
 
-      <div id="star-banner" class="star-banner" style="display:none;">
-        <div class="star-banner-left">
-          <span class="star-banner-icon">⭐</span>
-          <div class="star-banner-text">
-            <span class="star-banner-title">Enjoying crunchyroller?</span>
-            <span class="star-banner-desc">Please consider leaving a star on GitHub to support development!</span>
-          </div>
-        </div>
-        <div class="star-banner-actions">
-          <a href="https://github.com/Vure-sh/crunchyroller" target="_blank" rel="noopener noreferrer" class="btn-star-cta" onclick="dismissStarBanner(true)">
-            ★ Star on GitHub
-          </a>
-          <button class="btn-star-dismiss" onclick="dismissStarBanner(false)" title="Dismiss">✕</button>
-        </div>
-      </div>
+      <!-- ============================================== -->
+      <!-- TAB 1: MAIN DASHBOARD (FULL, UNSTRIPPED)      -->
+      <!-- ============================================== -->
+      <div id="tab-downloads" class="tab-pane active">
 
-      <div class="card">
-        <div class="card-label">session</div>
-        <div class="field">
-          <label>session token</label>
-          <div class="row">
-            <input type="password" id="tok" placeholder="etp_rt cookie value">
-            <button class="btn-s" onclick="saveToken()">save</button>
-          </div>
-        </div>
-        <div style="margin-top:12px">
-          <button id="toggle-android-login-btn" onclick="toggleAndroidLoginForm()" style="width:100%">login (email / password)</button>
-        </div>
-
-        <div id="android-login-panel" style="display:none;">
+        <!-- Card 1: Session / Auth -->
+        <div class="card" id="session-card">
+          <div class="card-label">session</div>
           <div class="field">
-            <label>email</label>
+            <label>session token</label>
             <div class="row">
-              <input type="email" id="login-email" placeholder="crunchyroll email">
+              <input type="password" id="tok" placeholder="etp_rt cookie value">
+              <button class="btn-s" onclick="saveToken()">save</button>
             </div>
           </div>
-          <div class="field" style="margin-top:4px;">
-            <label>password</label>
-            <div class="row">
-              <input type="password" id="login-pass" placeholder="crunchyroll password">
-              <button class="btn-s" id="btn-login-cred" onclick="loginCredentials()">sign in</button>
+          <div style="margin-top:12px">
+            <button id="toggle-android-login-btn" onclick="toggleAndroidLoginForm()" style="width:100%">login (email / password)</button>
+          </div>
+
+          <div id="android-login-panel" style="display:none;">
+            <div class="field">
+              <label>email</label>
+              <div class="row">
+                <input type="email" id="login-email" placeholder="crunchyroll email">
+              </div>
+            </div>
+            <div class="field" style="margin-top:4px;">
+              <label>password</label>
+              <div class="row">
+                <input type="password" id="login-pass" placeholder="crunchyroll password">
+                <button class="btn-s" id="btn-login-cred" onclick="loginCredentials()">sign in</button>
+              </div>
+            </div>
+          </div>
+
+          <p class="hint">
+            paste your etp_rt cookie, or sign in directly with email & password.
+          </p>
+        </div>
+
+        <!-- Card 2: Quality & Formats -->
+        <div class="card" id="options-card">
+          <div class="card-label">quality</div>
+          <div class="grid2">
+            <div class="field">
+              <label>video</label>
+              <div id="dd-video" class="select-dropdown"></div>
+              <input type="hidden" id="vq" value="1080p">
+            </div>
+            <div class="field">
+              <label>audio</label>
+              <div id="dd-audio-qual" class="select-dropdown"></div>
+              <input type="hidden" id="aq" value="192k">
+            </div>
+            <div class="field">
+              <label>audio language</label>
+              <div id="dd-audio" class="select-dropdown"></div>
+              <input type="hidden" id="al" value="ja-JP">
+            </div>
+            <div class="field">
+              <label>subtitles</label>
+              <div id="dd-subs" class="select-dropdown"></div>
+              <input type="hidden" id="sl" value="en-US">
             </div>
           </div>
         </div>
 
-        <p class="hint">
-          paste your etp_rt cookie, or sign in directly with email & password.
-        </p>
-      </div>
-
-      <div class="card">
-        <div class="card-label">quality</div>
-        <div class="grid2">
+        <!-- Card 3: Download Directory -->
+        <div class="card" id="directory-card">
+          <div class="card-label">directory</div>
           <div class="field">
-            <label>video</label>
-            <div id="dd-video" class="select-dropdown"></div>
-            <input type="hidden" id="vq" value="1080p">
+            <label>download folder</label>
+            <div class="row">
+              <input type="text" id="download-dir" placeholder="default: anime/ (or choose custom)" onchange="saveCfg()">
+              <button class="btn-s" id="browse-dir-btn" onclick="browseDirectory()">browse</button>
+            </div>
           </div>
-          <div class="field">
-            <label>audio</label>
-            <div id="dd-audio-qual" class="select-dropdown"></div>
-            <input type="hidden" id="aq" value="192k">
-          </div>
-          <div class="field">
-            <label>audio language</label>
-            <div id="dd-audio" class="select-dropdown"></div>
-            <input type="hidden" id="al" value="ja-JP">
-          </div>
-          <div class="field">
-            <label>subtitles</label>
-            <div id="dd-subs" class="select-dropdown"></div>
-            <input type="hidden" id="sl" value="en-US">
-          </div>
+          <p class="hint">
+            episodes will be saved into Series / Season XX folders inside this directory.
+          </p>
         </div>
-      </div>
 
-      <div class="card">
-        <div class="card-label">directory</div>
-        <div class="field">
-          <label>download folder</label>
+        <!-- Card 4: Download & Episode Tree -->
+        <div class="card" id="download-card">
+          <div class="card-label">download</div>
           <div class="row">
-            <input type="text" id="download-dir" placeholder="default: anime/ (or choose custom)" onchange="saveCfg()">
-            <button class="btn-s" id="browse-dir-btn" onclick="browseDirectory()">browse</button>
+            <input type="text" id="url" placeholder="paste a crunchyroll url">
+            <button id="fetch-btn" onclick="fetchUrl()">fetch</button>
           </div>
-        </div>
-        <p class="hint">
-          episodes will be saved into Series / Season XX folders inside this directory.
-        </p>
-      </div>
 
-      <div class="card">
-        <div class="card-label">download</div>
-        <div class="row">
-          <input type="text" id="url" placeholder="paste a crunchyroll url">
-          <button id="fetch-btn" onclick="fetchUrl()">fetch</button>
-        </div>
+          <label class="check-row" for="force-download">
+            <input type="checkbox" id="force-download" onchange="saveCfg()">
+            <span>force redownload and replace existing files</span>
+          </label>
 
-        <label class="check-row" for="force-download">
-          <input type="checkbox" id="force-download" onchange="saveCfg()">
-          <span>force redownload and replace existing files</span>
-        </label>
-
-        <div id="tree">
-          <hr class="div">
-          <div class="ser-title-row">
-            <div class="ser-title" id="ser-title"></div>
-            <div class="tree-header-actions">
-              <button class="btn-s" id="toggle-seasons-btn" onclick="toggleAllSeasons()">expand all</button>
+          <div id="tree">
+            <hr class="div">
+            <div class="ser-title-row">
+              <div class="ser-title" id="ser-title"></div>
+              <div class="tree-header-actions">
+                <button class="btn-s" id="toggle-seasons-btn" onclick="toggleAllSeasons()">expand all</button>
+                <button class="btn-s" onclick="pickAll(true)">all</button>
+                <button class="btn-s" onclick="pickAll(false)">none</button>
+                <button class="btn-s btn-dl-top" onclick="startDl()">download</button>
+                <div class="tree-badge" id="tree-selected-count">0 selected</div>
+              </div>
+            </div>
+            <div id="sn-list"></div>
+            <hr class="div">
+            <div class="row" style="justify-content:flex-end">
               <button class="btn-s" onclick="pickAll(true)">all</button>
               <button class="btn-s" onclick="pickAll(false)">none</button>
-              <button class="btn-s btn-dl-top" onclick="startDl()">download</button>
-              <div class="tree-badge" id="tree-selected-count">0 selected</div>
+              <button id="dl-btn" onclick="startDl()">download</button>
             </div>
           </div>
-          <div id="sn-list"></div>
-          <hr class="div">
-          <div class="row" style="justify-content:flex-end">
-            <button class="btn-s" onclick="pickAll(true)">all</button>
-            <button class="btn-s" onclick="pickAll(false)">none</button>
-            <button id="dl-btn" onclick="startDl()">download</button>
-          </div>
         </div>
+
+        <!-- Card 5: Active Download Progress Panel -->
+        <div class="card" id="dl-panel">
+          <div class="card-label">progress</div>
+          <div class="dl-status-row">
+            <span id="pill" class="pill pill-run"><span class="spin"></span>downloading</span>
+            <span id="dl-ep-counter" class="dl-counter">0 / 0</span>
+            <span id="dl-speed" class="dl-speed"></span>
+            <div class="dl-actions">
+              <button id="dl-pause-btn" class="btn-s btn-pause" onclick="togglePause()">pause</button>
+              <button id="dl-skip-btn" class="btn-s btn-skip" onclick="skipDl()" title="Skip this episode and continue next">skip</button>
+              <button id="dl-cancel-btn" class="btn-s btn-cancel" onclick="cancelCurrentEp()" title="Cancel active episode and move to next">cancel ep</button>
+            </div>
+          </div>
+          <div id="cur-ep" class="dl-ep-name"></div>
+          <div class="dl-bar-label">
+            <span class="dl-bar-title">overall</span>
+            <span id="ppct-overall" class="dl-bar-pct">0.0%</span>
+          </div>
+          <div class="prog-bar-wrap">
+            <div class="prog-bar" id="pbar-overall"></div>
+          </div>
+          <div class="dl-bar-label">
+            <span class="dl-bar-title">track</span>
+            <span id="dl-segs" class="dl-bar-pct"></span>
+          </div>
+          <div class="prog-bar-wrap prog-bar-wrap-sm">
+            <div class="prog-bar prog-bar-dim" id="pbar-track"></div>
+          </div>
+          <div id="log"></div>
+        </div>
+
+        <!-- Card 6: Tasks & Queue Panel -->
+        <div class="card" id="queue-panel" style="display:none;">
+          <div class="card-label-row">
+            <div class="card-label">tasks & queue <span id="queue-badge" class="queue-badge">0</span></div>
+            <div class="queue-actions">
+              <button class="btn-s" id="btn-resume-interrupted" onclick="resumeInterrupted()" title="Resume unfinished downloads from checkpoint">resume interrupted</button>
+              <button class="btn-s" id="btn-retry-failed" onclick="retryFailed()" title="Retry failed episodes">retry failed</button>
+              <button class="btn-s btn-clear-tasks" id="btn-clear-tasks" onclick="clearFinishedTasks()" title="Clear completed tasks">clear tasks</button>
+              <button class="btn-s btn-clear-queue" onclick="clearQueue()" title="Remove all upcoming episodes">clear queue</button>
+            </div>
+          </div>
+          <div id="queue-list" class="queue-list"></div>
+        </div>
+
       </div>
 
-      <div class="card" id="dl-panel">
-        <div class="card-label">progress</div>
-        <div class="dl-status-row">
-          <span id="pill" class="pill pill-run"><span class="spin"></span>downloading</span>
-          <span id="dl-ep-counter" class="dl-counter">0 / 0</span>
-          <span id="dl-speed" class="dl-speed"></span>
-          <div class="dl-actions">
-            <button id="dl-pause-btn" class="btn-s btn-pause" onclick="togglePause()">pause</button>
-            <button id="dl-skip-btn" class="btn-s btn-skip" onclick="skipDl()" title="Skip this episode and continue next">skip</button>
-            <button id="dl-cancel-btn" class="btn-s btn-cancel" onclick="cancelCurrentEp()" title="Cancel active episode and move to next">cancel ep</button>
-          </div>
-        </div>
-        <div id="cur-ep" class="dl-ep-name"></div>
-        <div class="dl-bar-label">
-          <span class="dl-bar-title">overall</span>
-          <span id="ppct-overall" class="dl-bar-pct">0.0%</span>
-        </div>
-        <div class="prog-bar-wrap">
-          <div class="prog-bar" id="pbar-overall"></div>
-        </div>
-        <div class="dl-bar-label">
-          <span class="dl-bar-title">track</span>
-          <span id="dl-segs" class="dl-bar-pct"></span>
-        </div>
-        <div class="prog-bar-wrap prog-bar-wrap-sm">
-          <div class="prog-bar prog-bar-dim" id="pbar-track"></div>
-        </div>
-        <div id="log"></div>
-      </div>
+      <!-- ============================================== -->
+      <!-- TAB 2: DEDICATED SETTINGS & ENGINE VIEW       -->
+      <!-- ============================================== -->
+      <div id="tab-settings" class="tab-pane" style="display:none;">
 
-      <div class="card" id="queue-panel" style="display:none;">
-        <div class="card-label-row">
-          <div class="card-label">tasks & queue <span id="queue-badge" class="queue-badge">0</span></div>
-          <div class="queue-actions">
-            <button class="btn-s btn-clear-queue" onclick="clearQueue()" title="Remove all upcoming episodes">clear queue</button>
+        <!-- Section 1: Downloads & Speed -->
+        <div class="card">
+          <div class="card-label">downloads & speed</div>
+          <div class="field">
+            <div class="slider-header-row">
+              <label for="workers-slider">download threads</label>
+              <span class="slider-val-badge" id="workers-badge">16 workers</span>
+            </div>
+            <input type="range" id="workers-slider" class="range-slider" min="4" max="32" step="2" value="16" oninput="onWorkersSlider(this.value)" onchange="saveCfg()">
+            <p class="hint">
+              How many parts to download at once (4–32). Crank it up if you have fast internet.
+            </p>
+          </div>
+
+          <!-- Zombie Stream Purger -->
+          <div class="cache-cleaner-box">
+            <div class="cache-cleaner-info">
+              <div class="toggle-title">active streams</div>
+              <div class="cache-stats-text">Clear stuck playback sessions if Crunchyroll says you have too many streams running.</div>
+            </div>
+            <button class="btn-s btn-purge-sessions" id="btn-purge-sessions" onclick="purgeZombieSessions()">clear streams</button>
           </div>
         </div>
-        <div id="queue-list" class="queue-list"></div>
+
+        <!-- Section 2: Storage & Logs -->
+        <div class="card">
+          <div class="card-label">storage & logs</div>
+
+          <div class="setting-toggle-card">
+            <label class="check-row" for="enable-resume">
+              <input type="checkbox" id="enable-resume" checked onchange="saveCfg()">
+              <div class="toggle-text-wrap">
+                <div class="toggle-title">resume downloads</div>
+                <div class="toggle-desc">Pick up where you left off if a download gets stopped or interrupted.</div>
+              </div>
+            </label>
+          </div>
+
+          <div class="setting-toggle-card">
+            <label class="check-row" for="enable-logging">
+              <input type="checkbox" id="enable-logging" checked onchange="saveCfg()">
+              <div class="toggle-text-wrap">
+                <div class="toggle-title">save log file</div>
+                <div class="toggle-desc">Write errors to crunchyroller.log so you can easily see what went wrong.</div>
+              </div>
+            </label>
+          </div>
+
+          <!-- Partials Cache Cleaner -->
+          <div class="cache-cleaner-box">
+            <div class="cache-cleaner-info">
+              <div class="toggle-title">download cache</div>
+              <div class="cache-stats-text" id="cache-stats-text">checking cache...</div>
+            </div>
+            <button class="btn-s btn-clean-cache" id="btn-clean-cache" onclick="cleanPartialsCache()">clear cache</button>
+          </div>
+        </div>
+
+        <!-- Section 3: History -->
+        <div class="card" id="history-card">
+          <div class="card-label-row">
+            <div class="card-label">history</div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn-s" onclick="clearHistory()" title="Clear download history">clear</button>
+              <button class="btn-s" onclick="loadHistory()" title="Refresh download history">refresh</button>
+            </div>
+          </div>
+          <div id="history-list" class="history-list">
+            <div class="history-empty">no downloads yet</div>
+          </div>
+        </div>
+
       </div>
 
     </div>
-
   </main>
 
   <div id="toast"></div>
-  <script src="/js/particles.js?v=3.1.0"></script>
-  <script src="/js/app.js?v=3.1.0"></script>
+  <script src="/js/particles.js?v=3.3.0"></script>
+  <script src="/js/app.js?v=3.3.0"></script>
 </body>
 </html>

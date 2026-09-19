@@ -1,5 +1,6 @@
 import http.server
 import json
+import logging
 import os
 import random
 import sys
@@ -9,8 +10,12 @@ import webbrowser
 from typing import Optional
 from urllib.parse import urlparse
 
+from crunchyroll.logger import get_log_path, is_logging_enabled, set_logging_enabled, setup_logging
+
 # Ensure pywebview uses PyQt6 on Linux when available
 os.environ.setdefault("QT_API", "pyqt6")
+
+logger = logging.getLogger("crunchyroller.gui")
 
 class SafeStream:
     def __init__(self, target):
@@ -59,6 +64,8 @@ from crunchyroll.downloader import download_episode
 from crunchyroll.http_client import CrunchyrollHttpClient
 from crunchyroll.queue import DownloadQueue
 from crunchyroll.session_pool import ConcurrencyConfig
+from crunchyroll.state_store import StateStore
+from crunchyroll.types import DEFAULT_DOWNLOAD_DIR
 
 # root folder for static web assets
 base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -78,7 +85,11 @@ STATE = {
         "audio_lang":    initial_cfg.get("audio_lang", "ja-JP"),
         "subs_lang":     initial_cfg.get("subs_lang", "en-US"),
         "force_download": bool(initial_cfg.get("force_download", False)),
-        "download_dir":  initial_cfg.get("download_dir", "anime"),
+        "download_dir":  initial_cfg.get("download_dir", DEFAULT_DOWNLOAD_DIR),
+        "workers":       max(4, min(32, int(initial_cfg.get("workers", 16)))),
+        "enable_hedging": bool(initial_cfg.get("enable_hedging", False)),
+        "enable_resume": bool(initial_cfg.get("enable_resume", True)),
+        "enable_logging": bool(initial_cfg.get("enable_logging", True)),
     },
     "download": {
         "status":      "idle",
@@ -97,11 +108,14 @@ STATE = {
         "queued_count": 0,
     },
 }
+set_logging_enabled(STATE["config"]["enable_logging"])
 LOCK = threading.RLock()
 DOWNLOAD_PAUSE_EVENT = threading.Event()
 DOWNLOAD_PAUSE_EVENT.set()
 DOWNLOAD_CANCEL_EVENT = threading.Event()
 DOWNLOAD_CANCEL_EVENT.clear()
+
+STATE_STORE = StateStore()
 
 QUEUE = DownloadQueue(
     client_factory=lambda: CrunchyrollHttpClient(),
@@ -109,6 +123,7 @@ QUEUE = DownloadQueue(
     cancel_event=DOWNLOAD_CANCEL_EVENT,
     lock=LOCK,
     cooldown_range=(1.5, 3.0),
+    state_store=STATE_STORE,
 )
 
 
@@ -126,7 +141,33 @@ def is_authenticated() -> bool:
     return get_auth_type() != "none"
 
 
+def is_webview2_installed() -> bool:
+    """check if WebView2 runtime is installed on Windows"""
+    if sys.platform != "win32":
+        return True
+    try:
+        import winreg
+        keys = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+            (winreg.HKEY_CURRENT_USER,  r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
+        ]
+        for hive, path in keys:
+            try:
+                k = winreg.OpenKey(hive, path)
+                val, _ = winreg.QueryValueEx(k, "pv")
+                winreg.CloseKey(k)
+                if val and val != "0.0.0.0":
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
+
+
 def _log(msg):
+    logger.info("%s", msg)
     with LOCK:
         STATE["download"]["log"].append(f"[{time.strftime('%H:%M:%S')}] {msg}")
         if len(STATE["download"]["log"]) > 200:
@@ -232,6 +273,10 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
                     STATE["download"]["complete_file"] = complete_file
                     STATE["download"]["status"]      = "paused" if is_paused else "running"
 
+            download_dir = STATE["config"].get("download_dir", DEFAULT_DOWNLOAD_DIR)
+            workers_cnt = max(4, min(32, int(STATE["config"].get("workers", 16))))
+            hedging = bool(STATE["config"].get("enable_hedging", False))
+            resume = bool(STATE["config"].get("enable_resume", True))
             download_episode(
                 client=client, base_content_id=ep_id, info=info,
                 audio_langs=a_langs, subs_langs=s_langs,
@@ -239,11 +284,14 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
                 force_download=force_download,
                 pause_event=DOWNLOAD_PAUSE_EVENT,
                 cancel_event=DOWNLOAD_CANCEL_EVENT,
+                download_dir=download_dir,
+                resume=resume,
                 concurrency_config=ConcurrencyConfig(
-                    min_workers=8,
-                    max_workers=16,
-                    initial_workers=16,
-                    pool_size=32,
+                    min_workers=max(4, workers_cnt // 2),
+                    max_workers=workers_cnt,
+                    initial_workers=workers_cnt,
+                    pool_size=workers_cnt * 2,
+                    hedging_enabled=hedging,
                 ),
             )
             with LOCK:
@@ -260,6 +308,7 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
                     STATE["download"].update(status="canceled", episode=f"canceled: {label}", speed="", track="canceled")
                 return
             _log(f"error on {ep_id}: {e}")
+            logger.error("Download failed for %s: %s", ep_id, e, exc_info=True)
             with LOCK:
                 STATE["download"].update(status="error", episode=f"failed: {ep_id}")
             return
@@ -365,10 +414,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
                 # Keep STATE in sync with config.json on disk so manual user edits are immediately honored
                 disk_cfg = load_config()
-                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download"):
+                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "workers", "enable_hedging", "enable_resume", "enable_logging"):
                     if k in disk_cfg:
-                        STATE["config"][k] = disk_cfg[k]
-                STATE["config"]["download_dir"] = disk_cfg.get("download_dir", "anime")
+                        if k == "workers":
+                            try:
+                                STATE["config"][k] = max(4, min(32, int(disk_cfg[k])))
+                            except (TypeError, ValueError):
+                                STATE["config"][k] = 16
+                        elif k in ("enable_hedging", "enable_resume", "force_download", "enable_logging"):
+                            STATE["config"][k] = bool(disk_cfg[k])
+                        else:
+                            STATE["config"][k] = disk_cfg[k]
+                STATE["config"]["download_dir"] = disk_cfg.get("download_dir", DEFAULT_DOWNLOAD_DIR)
                 if disk_cfg.get("etp_rt"):
                     STATE["etp_rt"] = disk_cfg["etp_rt"]
                 if disk_cfg.get("android_access_token"):
@@ -381,6 +438,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     "download": STATE["download"],
                     "queue": q_state["queue"],
                     "tasks": q_state.get("tasks", []),
+                    "log_path": get_log_path(),
                 })
             return
 
@@ -393,6 +451,66 @@ class Handler(http.server.BaseHTTPRequestHandler):
             })
             return
 
+        elif path == "/api/queue/history":
+            self._json({
+                "success": True,
+                "history": QUEUE.get_history_list(),
+            })
+            return
+
+        elif path == "/api/partials/status":
+            with LOCK:
+                dl_dir = STATE["config"].get("download_dir") or DEFAULT_DOWNLOAD_DIR
+            dl_dir = os.path.abspath(os.path.expanduser(dl_dir))
+
+            partials_roots = [
+                os.path.join(dl_dir, ".cr_partials"),
+                os.path.join(os.path.abspath(DEFAULT_DOWNLOAD_DIR), ".cr_partials"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cr_partials"),
+            ]
+            seen_roots = set()
+            total_bytes = 0
+            episodes = []
+
+            for root_dir in partials_roots:
+                if root_dir in seen_roots or not os.path.exists(root_dir) or not os.path.isdir(root_dir):
+                    continue
+                seen_roots.add(root_dir)
+                try:
+                    for ep_entry in os.scandir(root_dir):
+                        if ep_entry.is_dir():
+                            ep_id = ep_entry.name
+                            ep_bytes = 0
+                            file_count = 0
+                            for item in os.scandir(ep_entry.path):
+                                if item.is_file():
+                                    try:
+                                        sz = item.stat().st_size
+                                        ep_bytes += sz
+                                        file_count += 1
+                                    except OSError:
+                                        pass
+                            if file_count > 0:
+                                total_bytes += ep_bytes
+                                episodes.append({
+                                    "ep_id": ep_id,
+                                    "bytes": ep_bytes,
+                                    "size_mb": round(ep_bytes / (1024 * 1024), 2),
+                                    "files": file_count,
+                                    "path": ep_entry.path,
+                                })
+                except OSError:
+                    pass
+
+            self._json({
+                "success": True,
+                "total_bytes": total_bytes,
+                "size_mb": round(total_bytes / (1024 * 1024), 2),
+                "episodes_count": len(episodes),
+                "episodes": episodes,
+            })
+            return
+
         elif path in (
             "/api/download/pause",
             "/api/download/resume",
@@ -402,9 +520,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "/api/download/cancel-all",
             "/api/queue/remove",
             "/api/queue/clear",
+            "/api/queue/history/clear",
+            "/api/queue/resume-interrupted",
+            "/api/queue/retry-failed",
             "/api/task/remove",
             "/api/task/cancel",
+            "/api/tasks/clear",
+            "/api/tasks/clear-finished",
             "/api/sessions/purge",
+            "/api/partials/clean",
         ):
             # State-changing actions are POST-only. A plain GET (e.g. an
             # <img> tag on a foreign site) must never mutate download state.
@@ -507,17 +631,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/config":
             with LOCK:
                 disk_cfg = load_config()
-                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "download_dir"):
+                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "download_dir", "workers", "enable_hedging", "enable_resume", "enable_logging"):
                     if k in data:
                         val = data[k]
                         if k == "download_dir":
-                            val = str(val).strip() if val else "anime"
-                            if val and val != "anime":
+                            val = str(val).strip() if val is not None else ""
+                            if not val or val == DEFAULT_DOWNLOAD_DIR:
+                                val = DEFAULT_DOWNLOAD_DIR
+                            else:
                                 val = os.path.abspath(os.path.expanduser(val))
+                        elif k == "workers":
+                            try:
+                                val = max(4, min(32, int(val)))
+                            except (TypeError, ValueError):
+                                val = 16
+                        elif k in ("enable_hedging", "enable_resume", "force_download", "enable_logging"):
+                            val = bool(val)
                         STATE["config"][k] = val
                         disk_cfg[k] = val
+                        if k == "enable_logging":
+                            set_logging_enabled(val)
             save_config(disk_cfg)
-            self._json({"success": True, "download_dir": STATE["config"].get("download_dir", "anime")})
+            self._json({
+                "success": True,
+                "config": STATE["config"],
+                "download_dir": STATE["config"].get("download_dir", DEFAULT_DOWNLOAD_DIR),
+            })
 
         elif path in ("/api/choose-directory", "/api/browse-directory"):
             chosen = None
@@ -634,8 +773,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             al = data.get("audio_lang", c["audio_lang"])
             sl = data.get("subs_lang", c["subs_lang"])
             fd = bool(data.get("force_download", c.get("force_download", False)))
+            workers = int(data.get("workers", c.get("workers", 16)))
+            enable_hedging = bool(data.get("enable_hedging", c.get("enable_hedging", False)))
+            enable_resume = bool(data.get("enable_resume", c.get("enable_resume", True)))
 
-            dl_dir = str(data.get("download_dir") or c.get("download_dir") or "anime").strip() or "anime"
+            dl_dir = str(data.get("download_dir") or c.get("download_dir") or DEFAULT_DOWNLOAD_DIR).strip() or DEFAULT_DOWNLOAD_DIR
             task_title = str(data.get("task_title") or data.get("series_title") or "").strip()
             enqueued = QUEUE.enqueue_batch(items, {
                 "video_quality": vq,
@@ -644,6 +786,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "subs_lang": sl,
                 "force_download": fd,
                 "download_dir": dl_dir,
+                "workers": workers,
+                "enable_hedging": enable_hedging,
+                "enable_resume": enable_resume,
             }, task_title=task_title)
             with LOCK:
                 STATE["download"]["status"] = "running"
@@ -721,9 +866,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             removed = QUEUE.remove_task(task_id)
             self._json({"success": removed})
 
+        elif path == "/api/tasks/clear" or path == "/api/tasks/clear-finished":
+            include_active = bool(data.get("all") or data.get("include_active"))
+            cleared = QUEUE.clear_tasks(include_active=include_active)
+            self._json({"success": True, "cleared": cleared})
+
         elif path == "/api/queue/clear":
             cleared = QUEUE.clear()
             self._json({"success": True, "cleared": cleared})
+
+        elif path == "/api/queue/history/clear":
+            cleared = QUEUE.clear_history()
+            self._json({"success": True, "cleared": cleared})
+
+        elif path == "/api/queue/resume-interrupted":
+            resumed = QUEUE.resume_interrupted()
+            self._json({"success": True, "resumed": resumed})
+
+        elif path == "/api/queue/retry-failed":
+            retried = QUEUE.retry_failed()
+            self._json({"success": True, "retried": retried})
 
         elif path == "/api/sessions/purge":
             try:
@@ -734,6 +896,60 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except Exception as e:
                 self._json({"success": False, "error": str(e)}, status=500)
 
+        elif path == "/api/partials/clean":
+            with LOCK:
+                dl_dir = STATE["config"].get("download_dir") or DEFAULT_DOWNLOAD_DIR
+                active_job = QUEUE.active_job
+                active_ep_id = active_job.ep_id if active_job else None
+
+            dl_dir = os.path.abspath(os.path.expanduser(dl_dir))
+            partials_roots = [
+                os.path.join(dl_dir, ".cr_partials"),
+                os.path.join(os.path.abspath(DEFAULT_DOWNLOAD_DIR), ".cr_partials"),
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cr_partials"),
+            ]
+            seen_roots = set()
+            freed_bytes = 0
+            cleaned_count = 0
+            skipped_active = False
+
+            import shutil
+            for root_dir in partials_roots:
+                if root_dir in seen_roots or not os.path.exists(root_dir) or not os.path.isdir(root_dir):
+                    continue
+                seen_roots.add(root_dir)
+                try:
+                    for ep_entry in os.scandir(root_dir):
+                        if ep_entry.is_dir():
+                            ep_id = ep_entry.name
+                            if active_ep_id and ep_id == active_ep_id:
+                                skipped_active = True
+                                continue
+                            ep_bytes = 0
+                            for item in os.scandir(ep_entry.path):
+                                if item.is_file():
+                                    try:
+                                        ep_bytes += item.stat().st_size
+                                    except OSError:
+                                        pass
+                            try:
+                                shutil.rmtree(ep_entry.path)
+                                freed_bytes += ep_bytes
+                                cleaned_count += 1
+                            except OSError as err:
+                                print(f"[partials] could not delete {ep_entry.path}: {err}")
+                except OSError:
+                    pass
+
+            _log(f"Cleaned partial cache: freed {round(freed_bytes / (1024 * 1024), 2)} MB ({cleaned_count} episodes)")
+            self._json({
+                "success": True,
+                "freed_bytes": freed_bytes,
+                "freed_mb": round(freed_bytes / (1024 * 1024), 2),
+                "cleaned_count": cleaned_count,
+                "skipped_active": skipped_active,
+            })
+
         elif path.startswith("/api/"):
             self._json({"success": False, "error": f"Endpoint not found: {path}. If you recently updated, please restart web_gui.py."}, 404)
         else:
@@ -742,6 +958,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 def start_gui(port=8000, use_browser=False):
     """launch crunchyroller inside a native desktop pywebview window (or default browser)"""
+    setup_logging()
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server_thread = threading.Thread(target=srv.serve_forever, daemon=True)
     server_thread.start()
@@ -771,9 +988,9 @@ def start_gui(port=8000, use_browser=False):
             gui_backend = "qt" if sys.platform != "win32" else None
             webview.start(gui=gui_backend)
         except Exception as e:
-            err = str(e).lower()
-            # WebView2 not installed — show a dialog so the user knows what to do
-            if "webview2" in err or "edge" in err or "clsid" in err or "cocreateinstance" in err or True:
+            logger.error("Native window launch failed: %s", e, exc_info=True)
+            # only warn if webview2 is actually missing
+            if sys.platform == "win32" and not is_webview2_installed():
                 try:
                     import ctypes
                     ctypes.windll.user32.MessageBoxW(

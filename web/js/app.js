@@ -396,9 +396,43 @@ function applyState(state) {
     const forceDownload = document.getElementById('force-download');
     if (forceDownload) forceDownload.checked = Boolean(state.config.force_download);
 
+    const enableResume = document.getElementById('enable-resume');
+    if (enableResume && state.config.enable_resume !== undefined) {
+      enableResume.checked = Boolean(state.config.enable_resume);
+    }
+
+    const enableLogging = document.getElementById('enable-logging');
+    if (enableLogging && state.config.enable_logging !== undefined) {
+      enableLogging.checked = Boolean(state.config.enable_logging);
+    }
+
+    if (state.config.workers !== undefined) {
+      const slider = document.getElementById('workers-slider');
+      if (slider) {
+        slider.value = state.config.workers;
+        onWorkersSlider(state.config.workers);
+      }
+    }
+
     const dlDirInput = document.getElementById('download-dir');
     if (dlDirInput && state.config.download_dir !== undefined) {
       dlDirInput.value = (state.config.download_dir === 'anime') ? '' : (state.config.download_dir || '');
+    }
+
+    updateQuickFormatBar();
+  }
+
+  // Update nav queue badge
+  const navBadge = document.getElementById('nav-queue-badge');
+  const queuedCount = (state.download && state.download.queued_count !== undefined)
+    ? state.download.queued_count
+    : (state.queue ? state.queue.length : 0);
+  if (navBadge) {
+    if (queuedCount > 0) {
+      navBadge.style.display = 'inline-flex';
+      navBadge.textContent = String(queuedCount);
+    } else {
+      navBadge.style.display = 'none';
     }
   }
 
@@ -480,13 +514,16 @@ async function loginCredentials() {
   }
 }
 
-// save quality / language dropdowns & download directory
+// save quality / language dropdowns, workers, resume, logging & download directory
 async function saveCfg() {
-  const vqVal = ddVideo ? ddVideo.value : (document.getElementById('vq').value || '1080p');
-  const aqVal = ddAudioQual ? ddAudioQual.value : (document.getElementById('aq').value || '192k');
-  const audioVal = ddAudio ? ddAudio.value : (document.getElementById('al').value || 'ja-JP');
-  const subsVal = ddSubs ? ddSubs.value : (document.getElementById('sl').value || 'en-US');
+  const vqVal = ddVideo ? ddVideo.value : (document.getElementById('vq')?.value || '1080p');
+  const aqVal = ddAudioQual ? ddAudioQual.value : (document.getElementById('aq')?.value || '192k');
+  const audioVal = ddAudio ? ddAudio.value : (document.getElementById('al')?.value || 'ja-JP');
+  const subsVal = ddSubs ? ddSubs.value : (document.getElementById('sl')?.value || 'en-US');
   const dlDirVal = (document.getElementById('download-dir') || {}).value || '';
+  const workersVal = parseInt(document.getElementById('workers-slider')?.value || '16', 10);
+  const resumeVal = Boolean(document.getElementById('enable-resume')?.checked);
+  const loggingVal = Boolean(document.getElementById('enable-logging')?.checked);
 
   await api('/api/config', {
     video_quality: vqVal,
@@ -495,7 +532,251 @@ async function saveCfg() {
     subs_lang: subsVal,
     force_download: (document.getElementById('force-download') || {}).checked || false,
     download_dir: dlDirVal.trim() || 'anime',
+    workers: workersVal,
+    enable_resume: resumeVal,
+    enable_logging: loggingVal,
   });
+
+  updateQuickFormatBar();
+}
+
+// Tab switcher
+function switchTab(tabName) {
+  document.querySelectorAll('.nav-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.tab === tabName);
+  });
+
+  document.querySelectorAll('.tab-pane').forEach(pane => {
+    const isActive = pane.id === `tab-${tabName}`;
+    pane.classList.toggle('active', isActive);
+    pane.style.display = isActive ? 'block' : 'none';
+  });
+
+  if (tabName === 'settings') {
+    updatePartialsCacheStatus();
+    loadHistory();
+  }
+}
+
+// Slider live badge update
+function onWorkersSlider(val) {
+  const badge = document.getElementById('workers-badge');
+  if (badge) badge.textContent = `${val} workers`;
+}
+
+// Quick format bar label sync
+function updateQuickFormatBar() {
+  const vqVal = ddVideo ? ddVideo.value : (document.getElementById('vq')?.value || '1080p');
+  const aqVal = ddAudioQual ? ddAudioQual.value : (document.getElementById('aq')?.value || '192k');
+  const alVal = ddAudio ? ddAudio.value : (document.getElementById('al')?.value || 'ja-JP');
+  const slVal = ddSubs ? ddSubs.value : (document.getElementById('sl')?.value || 'en-US');
+
+  const vqEl = document.getElementById('qf-vq');
+  if (vqEl) vqEl.textContent = vqVal;
+
+  const aqEl = document.getElementById('qf-aq');
+  if (aqEl) aqEl.textContent = aqVal;
+
+  const langsEl = document.getElementById('qf-langs');
+  if (langsEl) {
+    const alLabel = alVal === 'all' ? 'All Audios' : (alVal.includes(',') ? alVal.split(',')[0] + ' +' : alVal);
+    const slLabel = slVal === 'all' ? 'All Subs' : (slVal.includes(',') ? slVal.split(',')[0] + ' +' : slVal);
+    langsEl.textContent = `${alLabel} [${slLabel}]`;
+  }
+}
+
+// Partials cache status
+async function updatePartialsCacheStatus() {
+  const el = document.getElementById('cache-stats-text');
+  if (!el) return;
+  try {
+    const res = await api('/api/partials/status');
+    if (res && res.success) {
+      if (res.episodes_count > 0) {
+        el.textContent = `${res.size_mb} MB across ${res.episodes_count} episode(s)`;
+      } else {
+        el.textContent = 'empty (0 MB)';
+      }
+    } else {
+      el.textContent = 'cache status unavailable';
+    }
+  } catch (e) {
+    el.textContent = 'could not load cache stats';
+  }
+}
+
+// Clean partials cache
+async function cleanPartialsCache() {
+  const btn = document.getElementById('btn-clean-cache');
+  const origText = btn ? btn.textContent : 'clear cache';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'clearing...';
+  }
+  try {
+    const res = await api('/api/partials/clean', {});
+    if (res && res.success) {
+      const msg = `Freed ${res.freed_mb} MB (${res.cleaned_count} episode(s))`;
+      toast(msg, 'ok');
+      updatePartialsCacheStatus();
+    } else {
+      toast(res?.error || 'failed to clear cache', 'err');
+    }
+  } catch (e) {
+    toast('error clearing cache: ' + e.message, 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  }
+}
+
+// Purge orphan stream tokens on Crunchyroll
+async function purgeZombieSessions() {
+  const btn = document.getElementById('btn-purge-sessions');
+  const origText = btn ? btn.textContent : 'clear streams';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'clearing...';
+  }
+  try {
+    const res = await api('/api/sessions/purge', {});
+    if (res && res.success) {
+      toast(`Cleared ${res.purged} active stream(s)`, 'ok');
+    } else {
+      toast(res?.error || 'failed to clear streams', 'err');
+    }
+  } catch (e) {
+    toast('purge error: ' + e.message, 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  }
+}
+
+// Resume interrupted downloads
+async function resumeInterrupted() {
+  const btn = document.getElementById('btn-resume-interrupted');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'resuming...';
+  }
+  try {
+    const res = await api('/api/queue/resume-interrupted', {});
+    if (res && res.success) {
+      toast(`Resumed ${res.resumed || 0} interrupted episode(s)`, 'ok');
+      startPolling();
+      const state = await api('/api/state');
+      if (state && state.download) updateProgressPanel(state.download);
+    } else {
+      toast(res?.error || 'failed to resume interrupted', 'err');
+    }
+  } catch (e) {
+    toast('resume error: ' + e.message, 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'resume interrupted';
+    }
+  }
+}
+
+// Retry failed downloads
+async function retryFailed() {
+  const btn = document.getElementById('btn-retry-failed');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'retrying...';
+  }
+  try {
+    const res = await api('/api/queue/retry-failed', {});
+    if (res && res.success) {
+      toast(`Re-queued ${res.retried || 0} failed episode(s)`, 'ok');
+      startPolling();
+      const state = await api('/api/state');
+      if (state && state.download) updateProgressPanel(state.download);
+    } else {
+      toast(res?.error || 'failed to retry episodes', 'err');
+    }
+  } catch (e) {
+    toast('retry error: ' + e.message, 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'retry failed';
+    }
+  }
+}
+
+// Clear download history
+async function clearHistory() {
+  const list = document.getElementById('history-list');
+  try {
+    const res = await api('/api/queue/history/clear', { method: 'POST' });
+    if (res && res.success) {
+      if (list) list.innerHTML = '<div class="history-empty">no downloads yet</div>';
+      loadHistory();
+    }
+  } catch (e) {
+    console.error('clearHistory error:', e);
+  }
+}
+
+// Load completed and canceled history
+async function loadHistory() {
+  const list = document.getElementById('history-list');
+  if (!list) return;
+  try {
+    const res = await api('/api/queue/history');
+    if (res && res.success && res.history) {
+      if (res.history.length === 0) {
+        list.innerHTML = '<div class="history-empty">no downloads yet</div>';
+        return;
+      }
+      list.innerHTML = '';
+      res.history.slice(0, 40).forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'history-row';
+
+        const left = document.createElement('div');
+        left.className = 'history-left';
+
+        const statusIco = document.createElement('span');
+        statusIco.className = `ep-ico ep-ico-${item.status === 'completed' ? 'done' : 'err'}`;
+        statusIco.textContent = item.status === 'completed' ? '✓' : (item.status === 'canceled' ? '✕' : '!');
+
+        const title = document.createElement('span');
+        title.className = 'history-title';
+        title.textContent = item.label || item.title || item.ep_id;
+        title.title = title.textContent;
+
+        left.append(statusIco, title);
+
+        const right = document.createElement('div');
+        right.className = 'history-right';
+
+        if (item.file_size_mb) {
+          const sz = document.createElement('span');
+          sz.className = 'history-size';
+          sz.textContent = `${item.file_size_mb} MB`;
+          right.appendChild(sz);
+        }
+
+        const pill = document.createElement('span');
+        pill.className = `task-ep-status-pill status-${item.status}`;
+        pill.textContent = item.status;
+        right.appendChild(pill);
+
+        row.append(left, right);
+        list.appendChild(row);
+      });
+    }
+  } catch (e) {
+    console.error('loadHistory error:', e);
+  }
 }
 
 // open native directory chooser
@@ -764,11 +1045,13 @@ async function startDl() {
   const animeTitle = (document.getElementById('ser-title')?.textContent || '').trim() ||
                      (selected.find(s => s.series_title)?.series_title) || 'Anime';
 
-  const vqVal = ddVideo ? ddVideo.value : (document.getElementById('vq').value || '1080p');
-  const aqVal = ddAudioQual ? ddAudioQual.value : (document.getElementById('aq').value || '192k');
-  const audioVal = ddAudio ? ddAudio.value : (document.getElementById('al').value || 'ja-JP');
-  const subsVal = ddSubs ? ddSubs.value : (document.getElementById('sl').value || 'en-US');
+  const vqVal = ddVideo ? ddVideo.value : (document.getElementById('vq')?.value || '1080p');
+  const aqVal = ddAudioQual ? ddAudioQual.value : (document.getElementById('aq')?.value || '192k');
+  const audioVal = ddAudio ? ddAudio.value : (document.getElementById('al')?.value || 'ja-JP');
+  const subsVal = ddSubs ? ddSubs.value : (document.getElementById('sl')?.value || 'en-US');
   const dlDirVal = (document.getElementById('download-dir') || {}).value || '';
+  const workersVal = parseInt(document.getElementById('workers-slider')?.value || '16', 10);
+  const resumeVal = Boolean(document.getElementById('enable-resume')?.checked);
 
   const res = await api('/api/download', {
     items: selected,
@@ -780,6 +1063,8 @@ async function startDl() {
     subs_lang: subsVal,
     force_download: (document.getElementById('force-download') || {}).checked || false,
     download_dir: dlDirVal.trim() || 'anime',
+    workers: workersVal,
+    enable_resume: resumeVal,
   });
 
   if (!res.success) {
@@ -962,6 +1247,23 @@ async function clearQueue() {
   }
 }
 
+async function clearFinishedTasks() {
+  const res = await api('/api/tasks/clear-finished', {});
+  if (res && res.success) {
+    if (res.cleared > 0) {
+      toast('Cleared ' + res.cleared + ' finished task(s)');
+    } else {
+      toast('No finished tasks to clear');
+    }
+    const state = await api('/api/state');
+    if (state && state.download) {
+      updateProgressPanel(state.download);
+    }
+  } else {
+    toast(res?.error || 'failed to clear tasks', 'err');
+  }
+}
+
 const collapsedTaskIds = new Set();
 
 function toggleTaskAccordion(taskId) {
@@ -980,8 +1282,7 @@ async function cancelTask(taskId, e) {
   if (e) e.stopPropagation();
   const card = document.querySelector(`.task-card[data-task-id="${taskId}"]`);
   const isFinished = card && (card.classList.contains('completed') || card.classList.contains('canceled') || card.classList.contains('failed'));
-  const promptMsg = isFinished ? 'Dismiss this anime task?' : 'Cancel this anime download task?';
-  if (!confirm(promptMsg)) return;
+  if (!isFinished && !confirm('Cancel this anime download task?')) return;
 
   const res = await api('/api/task/remove', { id: taskId });
   if (res && res.success) {
@@ -1419,7 +1720,7 @@ function createTaskCard(task) {
   const cancelBtn = document.createElement('button');
   cancelBtn.className = 'task-cancel-btn';
   cancelBtn.innerHTML = '✕';
-  cancelBtn.title = (task.status === 'completed' || task.status === 'canceled') ? 'Dismiss task' : 'Cancel task';
+  cancelBtn.title = (task.status === 'completed' || task.status === 'canceled' || task.status === 'failed') ? 'Dismiss task' : 'Cancel task';
   cancelBtn.onclick = (e) => cancelTask(task.id, e);
 
   const chevron = document.createElement('span');
@@ -1451,6 +1752,12 @@ function createTaskCard(task) {
 function updateTaskCard(card, task) {
   const isCollapsed = collapsedTaskIds.has(task.id);
   card.className = `task-card ${task.status}` + (isCollapsed ? ' collapsed' : '');
+
+  const cancelBtn = card.querySelector('.task-cancel-btn');
+  if (cancelBtn) {
+    const isFinished = task.status === 'completed' || task.status === 'canceled' || task.status === 'failed';
+    cancelBtn.title = isFinished ? 'Dismiss task' : 'Cancel task';
+  }
 
   const pct = Math.max(0, Math.min(100, Number(task.progress_pct) || 0));
   const dashoffset = (100 - pct).toFixed(1);
