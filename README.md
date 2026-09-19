@@ -150,6 +150,19 @@ Run `python main.py --help` to see all available flags.
 
 ---
 
+## Logs & Troubleshooting
+
+If you run into an error, want to inspect download details, or need to attach logs when opening an issue, Crunchyroller automatically writes clean, token-redacted logs here:
+
+- **Windows:** `%LOCALAPPDATA%\crunchyroller\logs\crunchyroller.log`  
+  *(Press `Win + R`, paste `%LOCALAPPDATA%\crunchyroller\logs`, and hit Enter).*
+- **Linux:** `~/.config/crunchyroller/logs/crunchyroller.log` (or `$XDG_STATE_HOME/crunchyroller/logs/`)
+- **macOS:** `~/Library/Logs/crunchyroller/crunchyroller.log`
+
+> **Note:** Sensitive data like auth tokens and passwords are automatically scrubbed from log files. You can disable persistent file logging anytime via the GUI Settings tab or by passing `--no-log` in the CLI.
+
+---
+
 ## FAQ
 
 **Can I download full seasons or batch download?**  
