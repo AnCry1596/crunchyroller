@@ -5,6 +5,7 @@ Supports FIFO queuing, job removal, queue clearing, pause/resume, skip, cancel, 
 
 from collections import deque
 from dataclasses import dataclass, field
+import logging
 import os
 import random
 import threading
@@ -12,11 +13,14 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 import uuid
 
+logger = logging.getLogger("crunchyroll.queue")
+
 from .api import get_episode_info, purge_orphan_streams
 from .downloader import download_episode
 from .http_client import CrunchyrollHttpClient
 from .session_pool import ConcurrencyConfig
-from .types import EpisodeInfo
+from .state_store import PersistedState, StateStore
+from .types import DEFAULT_DOWNLOAD_DIR, EpisodeInfo
 
 
 @dataclass
@@ -32,8 +36,11 @@ class QueueItem:
     audio_langs: List[str] = field(default_factory=lambda: ["ja-JP"])
     subs_langs: List[str] = field(default_factory=lambda: ["en-US"])
     force_download: bool = False
-    download_dir: str = "anime"
-    status: str = "queued"  # queued | running | paused | completed | failed | canceled
+    download_dir: str = DEFAULT_DOWNLOAD_DIR
+    workers: int = 16
+    enable_hedging: bool = False
+    enable_resume: bool = True
+    status: str = "queued"  # queued | running | paused | completed | failed | canceled | interrupted
     error: Optional[str] = None
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
@@ -66,6 +73,9 @@ class QueueItem:
             "subs_langs": self.subs_langs,
             "force_download": self.force_download,
             "download_dir": self.download_dir,
+            "workers": self.workers,
+            "enable_hedging": self.enable_hedging,
+            "enable_resume": self.enable_resume,
             "status": self.status,
             "error": self.error,
             "created_at": self.created_at,
@@ -76,6 +86,34 @@ class QueueItem:
             "task_id": self.task_id,
         }
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "QueueItem":
+        return cls(
+            id=str(d.get("id", "")),
+            ep_id=str(d.get("ep_id", "")),
+            title=str(d.get("title", "")),
+            season_number=int(d.get("season_number", 0)),
+            episode_number=int(d.get("episode_number", 0)),
+            series_title=str(d.get("series_title", "")),
+            video_quality=str(d.get("video_quality", "1080p")),
+            audio_quality=str(d.get("audio_quality", "192k")),
+            audio_langs=list(d.get("audio_langs") or ["ja-JP"]),
+            subs_langs=list(d.get("subs_langs") or ["en-US"]),
+            force_download=bool(d.get("force_download", False)),
+            download_dir=str(d.get("download_dir") or DEFAULT_DOWNLOAD_DIR),
+            workers=int(d.get("workers", 16)),
+            enable_hedging=bool(d.get("enable_hedging", False)),
+            enable_resume=bool(d.get("enable_resume", True)),
+            status=str(d.get("status", "queued")),
+            error=d.get("error"),
+            created_at=float(d.get("created_at", time.time())),
+            started_at=d.get("started_at"),
+            finished_at=d.get("finished_at"),
+            output_file=d.get("output_file"),
+            file_size_mb=float(d.get("file_size_mb", 0.0)),
+            task_id=str(d.get("task_id", "")),
+        )
+
 
 @dataclass
 class DownloadTask:
@@ -85,9 +123,74 @@ class DownloadTask:
     audio_quality: str = "192k"
     audio_langs: List[str] = field(default_factory=lambda: ["ja-JP"])
     subs_langs: List[str] = field(default_factory=lambda: ["en-US"])
-    status: str = "queued"  # queued | running | paused | completed | canceled | failed
+    status: str = "queued"  # queued | running | paused | completed | canceled | failed | interrupted
     item_ids: List[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
+
+    def to_persisted_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "series_title": self.series_title,
+            "video_quality": self.video_quality,
+            "audio_quality": self.audio_quality,
+            "audio_langs": self.audio_langs,
+            "subs_langs": self.subs_langs,
+            "status": self.status,
+            "item_ids": self.item_ids,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "DownloadTask":
+        return cls(
+            id=str(d.get("id", "")),
+            series_title=str(d.get("series_title", "")),
+            video_quality=str(d.get("video_quality", "1080p")),
+            audio_quality=str(d.get("audio_quality", "192k")),
+            audio_langs=list(d.get("audio_langs") or ["ja-JP"]),
+            subs_langs=list(d.get("subs_langs") or ["en-US"]),
+            status=str(d.get("status", "queued")),
+            item_ids=list(d.get("item_ids") or []),
+            created_at=float(d.get("created_at", time.time())),
+        )
+
+    def get_computed_status(
+        self,
+        items_map: Dict[str, QueueItem],
+        active_job_id: Optional[str] = None,
+    ) -> str:
+        task_items = [items_map[iid] for iid in self.item_ids if iid in items_map]
+        active_items = [it for it in task_items if it.status != "canceled"]
+        total = len(active_items)
+        completed = sum(1 for it in active_items if it.status == "completed")
+        failed = sum(1 for it in active_items if it.status == "failed")
+        canceled = sum(1 for it in task_items if it.status == "canceled")
+        is_active = any(it.id == active_job_id for it in active_items)
+
+        if self.status == "canceled":
+            return "canceled"
+        elif is_active:
+            return "paused" if any(it.status == "paused" for it in active_items) else "running"
+        elif completed == total and total > 0:
+            return "completed"
+        elif total == 0 and canceled > 0:
+            return "canceled"
+        elif completed + failed == total and total > 0:
+            return "failed" if failed > 0 else "canceled"
+        elif any(it.status == "paused" for it in active_items):
+            return "paused"
+        elif any(it.status == "queued" for it in active_items):
+            return "queued"
+        else:
+            return self.status
+
+    def is_finished(
+        self,
+        items_map: Dict[str, QueueItem],
+        active_job_id: Optional[str] = None,
+    ) -> bool:
+        st = self.get_computed_status(items_map, active_job_id=active_job_id)
+        return st in ("completed", "canceled", "failed")
 
     def to_dict(
         self,
@@ -112,22 +215,9 @@ class DownloadTask:
             active_slice = (active_progress_pct / 100.0) / total if is_active else 0.0
             progress = round(min(99.9, (base + active_slice) * 100.0), 1)
 
-        if self.status == "canceled":
-            st = "canceled"
-        elif is_active:
-            st = "paused" if any(it.status == "paused" for it in active_items) else "running"
-        elif completed == total and total > 0:
-            st = "completed"
-        elif total == 0 and canceled > 0:
-            st = "canceled"
-        elif completed + failed == total and total > 0:
-            st = "failed" if failed > 0 else "canceled"
-        elif any(it.status == "paused" for it in active_items):
-            st = "paused"
-        elif any(it.status == "queued" for it in active_items):
-            st = "queued"
-        else:
-            st = self.status
+        st = self.get_computed_status(items_map, active_job_id=active_job_id)
+        if st in ("completed", "canceled", "failed"):
+            self.status = st
 
         episodes_list = []
         for it in task_items:
@@ -173,6 +263,7 @@ class DownloadQueue:
         lock: Optional[threading.RLock] = None,
         cooldown_range: tuple = (1.5, 2.5),
         max_history: int = 50,
+        state_store: Optional[StateStore] = None,
     ):
         self.lock = lock or threading.RLock()
         self.pause_event = pause_event or threading.Event()
@@ -183,6 +274,7 @@ class DownloadQueue:
         self.client_factory = client_factory or (lambda: CrunchyrollHttpClient())
         self.cooldown_range = cooldown_range
         self.max_history = max_history
+        self.state_store = state_store
 
         self.queue: deque[QueueItem] = deque()
         self.active_job: Optional[QueueItem] = None
@@ -207,7 +299,87 @@ class DownloadQueue:
         self.total_batch_count: int = 0
         self.last_status: str = "idle"
 
+        if self.state_store:
+            persisted = self.state_store.load()
+            self.rehydrate(persisted)
+
+    def _snapshot(self) -> Dict[str, Any]:
+        with self.lock:
+            q_list = [j.to_dict() for j in self.queue]
+            h_list = [j.to_dict() for j in self.history[-self.max_history:]]
+            t_list = [t.to_persisted_dict() for t in self.tasks.values()]
+            return {
+                "schema": 1,
+                "saved_at": time.time(),
+                "tasks": t_list,
+                "queue": q_list,
+                "history": h_list,
+            }
+
+    def _trigger_save(self) -> None:
+        if self.state_store:
+            snapshot = self._snapshot()
+            self.state_store.schedule_save(snapshot)
+
+    def rehydrate(self, state: PersistedState) -> int:
+        with self.lock:
+            count = 0
+            self.history = [QueueItem.from_dict(d) for d in state.history][-self.max_history:]
+            for it in self.history:
+                self.all_items_map[it.id] = it
+
+            for td in state.tasks:
+                task = DownloadTask.from_dict(td)
+                self.tasks[task.id] = task
+
+            restored_queue = []
+            for d in state.queue:
+                it = QueueItem.from_dict(d)
+                if it.status in ("running", "paused"):
+                    it.status = "interrupted"
+                restored_queue.append(it)
+                self.all_items_map[it.id] = it
+                count += 1
+
+            self.queue = deque(restored_queue)
+            self.total_batch_count = len(self.queue)
+            self.completed_batch_count = 0
+            if count > 0:
+                self.log(f"rehydrated {count} item(s) from persistent state")
+            return count
+
+    def resume_interrupted(self) -> int:
+        with self.lock:
+            resumed = 0
+            for it in self.queue:
+                if it.status == "interrupted":
+                    it.status = "queued"
+                    resumed += 1
+            if resumed > 0:
+                self.log(f"resumed {resumed} interrupted download(s)")
+                self._trigger_save()
+                self._ensure_worker_running()
+            return resumed
+
+    def retry_failed(self) -> int:
+        with self.lock:
+            retried = 0
+            failed_items = [it for it in self.history if it.status == "failed"]
+            self.history = [it for it in self.history if it.status != "failed"]
+            for it in failed_items:
+                it.status = "queued"
+                it.error = None
+                self.queue.append(it)
+                retried += 1
+            if retried > 0:
+                self.total_batch_count += retried
+                self.log(f"re-enqueued {retried} failed download(s)")
+                self._trigger_save()
+                self._ensure_worker_running()
+            return retried
+
     def log(self, msg: str):
+        logger.info("%s", msg)
         with self.lock:
             self.log_messages.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
             if len(self.log_messages) > 200:
@@ -251,7 +423,10 @@ class DownloadQueue:
             al = normalize_langs(item.get("audio_langs") or item.get("audio_lang") or opts.get("audio_lang") or ["ja-JP"])
             sl = normalize_langs(item.get("subs_langs") or item.get("subs_lang") or opts.get("subs_lang") or ["en-US"])
             fd = bool(item.get("force_download", opts.get("force_download", False)))
-            dl_dir = str(item.get("download_dir") or opts.get("download_dir") or "anime").strip() or "anime"
+            dl_dir = str(item.get("download_dir") or opts.get("download_dir") or DEFAULT_DOWNLOAD_DIR).strip() or DEFAULT_DOWNLOAD_DIR
+            workers = int(item.get("workers") or opts.get("workers") or 16)
+            enable_hedging = bool(item.get("enable_hedging", opts.get("enable_hedging", False)))
+            enable_resume = bool(item.get("enable_resume", opts.get("enable_resume", True)))
         else:
             ep_id = str(item).strip()
             title = ""
@@ -263,7 +438,10 @@ class DownloadQueue:
             al = normalize_langs(opts.get("audio_lang") or ["ja-JP"])
             sl = normalize_langs(opts.get("subs_lang") or ["en-US"])
             fd = bool(opts.get("force_download", False))
-            dl_dir = str(opts.get("download_dir") or "anime").strip() or "anime"
+            dl_dir = str(opts.get("download_dir") or DEFAULT_DOWNLOAD_DIR).strip() or DEFAULT_DOWNLOAD_DIR
+            workers = int(opts.get("workers") or 16)
+            enable_hedging = bool(opts.get("enable_hedging", False))
+            enable_resume = bool(opts.get("enable_resume", True))
 
         if not ep_id:
             return None
@@ -289,6 +467,9 @@ class DownloadQueue:
                 subs_langs=sl,
                 force_download=fd,
                 download_dir=dl_dir,
+                workers=workers,
+                enable_hedging=enable_hedging,
+                enable_resume=enable_resume,
                 status="queued",
                 task_id=task_id or "",
             )
@@ -308,6 +489,7 @@ class DownloadQueue:
                 self.total_batch_count += 1
 
             self._ensure_worker_running()
+            self._trigger_save()
             return job
 
     def enqueue_batch(
@@ -341,7 +523,9 @@ class DownloadQueue:
 
         enqueued: List[QueueItem] = []
         for it in items:
-            job = self.enqueue(it, default_options, task_id=task_id, task_title=anime_name)
+            item_opts = dict(opts)
+            item_opts["series_title"] = anime_name
+            job = self.enqueue(it, item_opts, task_id=task_id)
             if job:
                 task.item_ids.append(job.id)
                 enqueued.append(job)
@@ -349,6 +533,7 @@ class DownloadQueue:
         if task.item_ids:
             with self.lock:
                 self.tasks[task_id] = task
+        self._trigger_save()
         return enqueued
 
     def remove(self, job_id: str) -> bool:
@@ -375,6 +560,7 @@ class DownloadQueue:
                     self.total_batch_count - 1,
                 )
                 self.log(f"Removed from queue: {target.label}")
+                self._trigger_save()
                 return True
             if self.active_job and (self.active_job.id == job_id or self.active_job.ep_id == job_id):
                 if self.active_job.task_id and self.active_job.task_id in self.tasks:
@@ -382,6 +568,7 @@ class DownloadQueue:
                     if self.active_job.id in task.item_ids:
                         task.item_ids.remove(self.active_job.id)
                 self.cancel_current(job_id=job_id)
+                self._trigger_save()
                 return True
         return False
 
@@ -391,9 +578,11 @@ class DownloadQueue:
             if task_id not in self.tasks:
                 return False
             task = self.tasks[task_id]
-            if task.status in ("completed", "canceled", "failed"):
+            active_id = self.active_job.id if self.active_job else None
+            if task.is_finished(self.all_items_map, active_job_id=active_id):
                 del self.tasks[task_id]
                 self.log(f"Dismissed task: {task.series_title}")
+                self._trigger_save()
                 return True
 
             task.status = "canceled"
@@ -411,10 +600,43 @@ class DownloadQueue:
 
             self.total_batch_count = max(self.completed_batch_count, self.total_batch_count - removed_count)
             self.log(f"Canceled task: {task.series_title} ({removed_count} item(s) removed)")
+            self._trigger_save()
             return True
 
+    def clear_finished_tasks(self) -> int:
+        """Clear all completed, canceled, or failed tasks."""
+        with self.lock:
+            active_id = self.active_job.id if self.active_job else None
+            finished = [
+                tid for tid, t in self.tasks.items()
+                if t.is_finished(self.all_items_map, active_job_id=active_id) or len(t.item_ids) == 0
+            ]
+            for tid in finished:
+                del self.tasks[tid]
+            if finished:
+                self.log(f"Cleared {len(finished)} finished task(s).")
+                self._trigger_save()
+            return len(finished)
+
+    def clear_tasks(self, include_active: bool = False) -> int:
+        """Clear tasks. If include_active is False, only clears finished tasks."""
+        with self.lock:
+            if not include_active:
+                return self.clear_finished_tasks()
+            count = len(self.tasks)
+            if self.active_job and self.active_job.task_id:
+                self.cancel_current()
+            for j in list(self.queue):
+                if j.task_id:
+                    j.status = "canceled"
+                    self.queue.remove(j)
+            self.tasks.clear()
+            self.log(f"All tasks cleared ({count} task(s)).")
+            self._trigger_save()
+            return count
+
     def clear(self) -> int:
-        """Clear all pending jobs in the queue."""
+        """Clear all pending jobs in the queue and remove finished tasks."""
         with self.lock:
             count = len(self.queue)
             for j in self.queue:
@@ -427,10 +649,15 @@ class DownloadQueue:
             self.total_batch_count = self.completed_batch_count + (1 if self.active_job else 0)
             tot_batch = max(1, self.total_batch_count)
             self.overall_pct = round((self.completed_batch_count / tot_batch) * 100, 1)
-            finished_tasks = [tid for tid, t in self.tasks.items() if t.status in ("completed", "canceled", "failed") or len(t.item_ids) == 0]
+            active_id = self.active_job.id if self.active_job else None
+            finished_tasks = [
+                tid for tid, t in self.tasks.items()
+                if t.is_finished(self.all_items_map, active_job_id=active_id) or len(t.item_ids) == 0
+            ]
             for tid in finished_tasks:
                 del self.tasks[tid]
             self.log(f"Queue cleared ({count} item(s) removed).")
+            self._trigger_save()
             return count
 
     def pause(self):
@@ -490,6 +717,18 @@ class DownloadQueue:
     def get_queue_list(self) -> List[Dict[str, Any]]:
         with self.lock:
             return [j.to_dict() for j in list(self.queue)]
+
+    def get_history_list(self) -> List[Dict[str, Any]]:
+        with self.lock:
+            return [j.to_dict() for j in reversed(self.history)]
+
+    def clear_history(self) -> int:
+        """Clear download history."""
+        with self.lock:
+            count = len(self.history)
+            self.history.clear()
+            self._trigger_save()
+            return count
 
     def get_active_job(self) -> Optional[Dict[str, Any]]:
         with self.lock:
@@ -684,14 +923,15 @@ class DownloadQueue:
                 try:
                     info = get_episode_info(client, job.ep_id)
                     if info and info.episode_metadata:
-                        if not job.title and info.title:
-                            job.title = info.title
-                        if not job.season_number and info.episode_metadata.season_number:
-                            job.season_number = info.episode_metadata.season_number
-                        if not job.episode_number and info.episode_metadata.episode_number:
-                            job.episode_number = info.episode_metadata.episode_number
-                        if not job.series_title and info.episode_metadata.series_title:
-                            job.series_title = info.episode_metadata.series_title
+                        with self.lock:
+                            if not job.title and info.title:
+                                job.title = info.title
+                            if not job.season_number and info.episode_metadata.season_number:
+                                job.season_number = info.episode_metadata.season_number
+                            if not job.episode_number and info.episode_metadata.episode_number:
+                                job.episode_number = info.episode_metadata.episode_number
+                            if not job.series_title and info.episode_metadata.series_title:
+                                job.series_title = info.episode_metadata.series_title
                 except Exception as ex:
                     self.log(f"metadata fetch warning for {job.ep_id}: {ex}")
 
@@ -716,21 +956,23 @@ class DownloadQueue:
                     pause_event=self.pause_event,
                     cancel_event=self.cancel_event,
                     download_dir=job.download_dir,
+                    resume=getattr(job, "enable_resume", True),
                     concurrency_config=ConcurrencyConfig(
-                        min_workers=8,
-                        max_workers=16,
-                        initial_workers=16,
-                        pool_size=32,
+                        min_workers=max(4, getattr(job, "workers", 16) // 2),
+                        max_workers=max(4, min(32, getattr(job, "workers", 16))),
+                        initial_workers=max(4, min(32, getattr(job, "workers", 16))),
+                        pool_size=max(8, min(64, getattr(job, "workers", 16) * 2)),
+                        hedging_enabled=bool(getattr(job, "enable_hedging", False)),
                     ),
                 )
 
                 if output_file and os.path.exists(output_file) and os.path.getsize(output_file) > 1024:
                     file_size_mb = os.path.getsize(output_file) / (1024 * 1024)
-                    job.output_file = output_file
-                    job.file_size_mb = file_size_mb
-                    job.status = "completed"
-                    job.finished_at = time.time()
                     with self.lock:
+                        job.output_file = output_file
+                        job.file_size_mb = file_size_mb
+                        job.status = "completed"
+                        job.finished_at = time.time()
                         self.completed_batch_count += 1
                         self.track = "done"
                         self.track_pct = 100.0
@@ -739,15 +981,16 @@ class DownloadQueue:
                         self.history.append(job)
                         if len(self.history) > self.max_history:
                             self.history.pop(0)
+                    self._trigger_save()
                     self.log(f"done: {job.label} ({file_size_mb:.1f} MB)")
                 else:
                     raise RuntimeError(f"Download finished but output file missing: {output_file}")
 
             except Exception as e:
                 if self.cancel_event.is_set() or isinstance(e, InterruptedError) or self.cancel_all_flag or job.status == "canceled":
-                    job.status = "canceled"
-                    job.finished_at = time.time()
                     with self.lock:
+                        job.status = "canceled"
+                        job.finished_at = time.time()
                         self.history.append(job)
                         if len(self.history) > self.max_history:
                             self.history.pop(0)
@@ -763,15 +1006,18 @@ class DownloadQueue:
                                 self.last_status = "running"
                             else:
                                 self.last_status = "canceled" if self.completed_batch_count == 0 else "completed"
+                    self._trigger_save()
                     self.log(f"canceled: {job.label}")
                 else:
-                    job.status = "failed"
-                    job.error = str(e)
-                    job.finished_at = time.time()
                     with self.lock:
+                        job.status = "failed"
+                        job.error = str(e)
+                        job.finished_at = time.time()
                         self.history.append(job)
                         if len(self.history) > self.max_history:
                             self.history.pop(0)
+                    self._trigger_save()
+                    logger.error("Download failed for %s: %s", job.label, e, exc_info=True)
                     self.log(f"failed: {job.label} — {e}")
             finally:
                 self._close_client(client)

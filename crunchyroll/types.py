@@ -78,3 +78,9 @@ class MediaTrack:
     locale: str
     is_default: bool = False
     is_cc: bool = False
+    bitrate: Optional[int] = None
+    title: Optional[str] = None
+
+
+DEFAULT_DOWNLOAD_DIR: str = "anime"
+

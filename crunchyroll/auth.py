@@ -17,6 +17,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "audio_lang": "ja-JP",
     "subs_lang": "en-US",
     "force_download": False,
+    "enable_logging": True,
 }
 
 

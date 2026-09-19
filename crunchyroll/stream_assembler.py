@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 logger = logging.getLogger("crunchyroll.stream_assembler")
 
@@ -27,26 +27,57 @@ class StreamAssembler:
         total_segments: int,
         max_in_flight_mb: int = 32,
         start_index: int = 1,
+        *,
+        resume_from_index: int = 0,
+        resume_offset: int = 0,
+        init_written: bool = False,
     ):
         self.output_path = output_path
         self.total_segments = total_segments
         self.max_in_flight_bytes = max_in_flight_mb * 1024 * 1024
         self.start_index = start_index
+        self.resume_from_index = max(0, int(resume_from_index))
+        self.resume_offset = max(0, int(resume_offset))
+        self.init_written = bool(init_written or (self.resume_from_index > 0))
 
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
         self._buffer: Dict[int, bytes] = {}
         self._current_memory_bytes: int = 0
-        self._next_expected_index: int = start_index
-        self._written_segments: int = 0
-        self._total_bytes_written: int = 0
+        self._next_expected_index: int = start_index + self.resume_from_index
+        self._written_segments: int = self.resume_from_index
+        self._total_bytes_written: int = self.resume_offset
         self._closed: bool = False
         self._aborted: bool = False
         self._error: Optional[Exception] = None
 
         # Open target file with 1MB OS write buffer
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-        self._file = open(output_path, "wb", buffering=1024 * 1024)
+        if self.resume_from_index > 0 and os.path.exists(output_path):
+            self._file = open(output_path, "r+b", buffering=1024 * 1024)
+            # Truncate to segment-aligned checkpoint to drop any torn or unbuffered tail
+            self._file.seek(self.resume_offset)
+            self._file.truncate(self.resume_offset)
+            self._file.seek(0, os.SEEK_END)
+        else:
+            self._file = open(output_path, "wb", buffering=1024 * 1024)
+
+    @property
+    def total_bytes_written(self) -> int:
+        with self._lock:
+            return self._total_bytes_written
+
+    def get_checkpoint(self) -> Tuple[int, int]:
+        """Atomically returns (completed_segment_index, total_bytes_written)."""
+        with self._lock:
+            return (self._next_expected_index - 1, self._total_bytes_written)
+
+    snapshot_progress = get_checkpoint
+
+    @property
+    def next_expected_index(self) -> int:
+        with self._lock:
+            return self._next_expected_index
 
     @property
     def written_segments(self) -> int:
@@ -65,8 +96,12 @@ class StreamAssembler:
                 raise RuntimeError(f"StreamAssembler aborted: {self._error}")
             if self._closed:
                 raise RuntimeError("StreamAssembler is already closed")
+            if self.init_written:
+                # Already written on previous run
+                return 0
             self._file.write(data)
             self._total_bytes_written += len(data)
+            self.init_written = True
             return len(data)
 
     def add_segment(self, segment_index: int, data: bytes) -> int:
@@ -111,6 +146,7 @@ class StreamAssembler:
             self._current_memory_bytes += seg_len
 
             # Drain contiguous sequential segments directly to disk
+            drained = False
             while self._next_expected_index in self._buffer:
                 chunk = self._buffer.pop(self._next_expected_index)
                 self._file.write(chunk)
@@ -118,8 +154,15 @@ class StreamAssembler:
                 self._total_bytes_written += len(chunk)
                 self._written_segments += 1
                 self._next_expected_index += 1
+                drained = True
                 # Wake up any workers waiting for memory capacity
                 self._condition.notify_all()
+
+            if drained:
+                try:
+                    self._file.flush()
+                except Exception:
+                    pass
 
             return seg_len
 
