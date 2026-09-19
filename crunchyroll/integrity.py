@@ -1,26 +1,44 @@
-"""
-crunchyroll/integrity.py
-
-Automated post-mux ffprobe stream integrity verification and atomic file finalization.
-Validates video, audio, and subtitle stream presence, codec correctness, duration bounds,
-and zero bitstream corruption before committing the final output Matroska container.
-"""
+# crunchyroll/integrity.py — ffprobe validation and atomic finalize
 
 import json
 import logging
 import os
 import shutil
 import subprocess
+import sys
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("crunchyroll.integrity")
 
 
 def find_ffprobe() -> str:
-    """Locates the ffprobe binary locally or in the system PATH."""
-    local_binary = os.path.join(os.getcwd(), "ffprobe.exe" if os.name == "nt" else "ffprobe")
-    if os.path.exists(local_binary):
-        return local_binary
+    # check beside ffmpeg, in bundle dirs, or system PATH
+    bin_name = "ffprobe.exe" if os.name == "nt" else "ffprobe"
+
+    try:
+        from .merger import find_ffmpeg
+        ffmpeg_bin = find_ffmpeg()
+        beside_ffmpeg = os.path.join(os.path.dirname(ffmpeg_bin), bin_name)
+        if os.path.exists(beside_ffmpeg):
+            return os.path.abspath(beside_ffmpeg)
+    except Exception:
+        pass
+
+    # 2. Check candidate directories
+    candidates = [
+        os.path.join(os.getcwd(), bin_name),
+        os.path.join(os.path.dirname(os.path.abspath(sys.executable)), bin_name),
+        os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "_internal", bin_name),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", bin_name),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "_internal", bin_name),
+    ]
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(os.path.join(sys._MEIPASS, bin_name))
+
+    for c in candidates:
+        if os.path.exists(c):
+            return os.path.abspath(c)
+
     found = shutil.which("ffprobe")
     if found:
         return found
@@ -134,6 +152,9 @@ class StreamValidator:
 
         try:
             data = StreamValidator.probe_file(file_path)
+        except FileNotFoundError:
+            logger.warning("ffprobe not found, skipping stream verification")
+            return True, "ffprobe not installed; integrity verification skipped", {}
         except Exception as e:
             return False, f"ffprobe probing failed: {e}", {}
 

@@ -44,6 +44,8 @@ def merge_everything(
     sub_tracks: List[MediaTrack],
     output_file: str,
     info: EpisodeInfo,
+    video_quality: Optional[str] = None,
+    duration_seconds: Optional[float] = None,
 ) -> None:
     """
     Muxes video, multi-audio dubs, and subtitle tracks into a single MKV container.
@@ -82,14 +84,51 @@ def merge_everything(
     if sub_tracks:
         args.extend(["-c:s", "copy"])
 
-    # Audio metadata (ISO 639-2/B language codes and localized titles)
+    # Video metadata (quality title and BPS / NUMBER_OF_BYTES tags for MediaInfo)
+    if video_quality:
+        args.extend(["-metadata:s:v:0", f"title={video_quality}"])
+    if os.path.exists(video_file):
+        try:
+            v_size = os.path.getsize(video_file)
+            if v_size > 0:
+                args.extend(["-metadata:s:v:0", f"NUMBER_OF_BYTES={v_size}"])
+                if duration_seconds and duration_seconds > 0:
+                    v_bps = int((v_size * 8) / duration_seconds)
+                    args.extend(["-metadata:s:v:0", f"BPS={v_bps}"])
+        except OSError:
+            pass
+
+    # Audio metadata (ISO 639-2/B language codes, localized titles with bitrate, and BPS tags)
     for i, audio in enumerate(audio_tracks):
         lang_code = LANGUAGE_CODES.get(audio.locale, audio.locale)
-        title = track_title(audio.locale)
+        base_title = track_title(audio.locale)
+
+        a_bps = audio.bitrate
+        a_size = None
+        if os.path.exists(audio.file):
+            try:
+                a_size = os.path.getsize(audio.file)
+                if a_size > 0 and (not a_bps or a_bps <= 0) and duration_seconds and duration_seconds > 0:
+                    a_bps = int((a_size * 8) / duration_seconds)
+            except OSError:
+                pass
+
+        if audio.title:
+            title = audio.title
+        elif a_bps and a_bps > 0:
+            kbps = round(a_bps / 1000)
+            title = f"{base_title} [{kbps} kbps]"
+        else:
+            title = base_title
+
         args.extend([
             f"-metadata:s:a:{i}", f"language={lang_code}",
             f"-metadata:s:a:{i}", f"title={title}",
         ])
+        if a_bps and a_bps > 0:
+            args.extend([f"-metadata:s:a:{i}", f"BPS={a_bps}"])
+        if a_size and a_size > 0:
+            args.extend([f"-metadata:s:a:{i}", f"NUMBER_OF_BYTES={a_size}"])
 
     # Subtitle metadata
     for j, sub in enumerate(sub_tracks):

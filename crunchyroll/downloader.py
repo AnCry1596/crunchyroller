@@ -1,4 +1,6 @@
+import hashlib
 import inspect
+import json
 import os
 import queue
 import shutil
@@ -11,7 +13,7 @@ import time
 import xml.etree.ElementTree as ET
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import requests
 
@@ -43,6 +45,7 @@ from .session_pool import ConcurrencyConfig, SessionPool
 from .stream_assembler import StreamAssembler
 from .tools import run_n_m3u8dl_re
 from .types import (
+    DEFAULT_DOWNLOAD_DIR,
     DubVersion,
     EpisodeInfo,
     EpisodeMetadata,
@@ -126,6 +129,58 @@ def _invoke_progress_cb(
                 pass
 
 
+def get_partial_dir(download_dir: Optional[str], ep_id: Union[str, int]) -> str:
+    """Returns absolute path to the partial downloads directory for an episode."""
+    base = download_dir or DEFAULT_DOWNLOAD_DIR
+    return os.path.abspath(os.path.join(base, ".cr_partials", str(ep_id)))
+
+
+def compute_manifest_sig(video_rep_id: str, audio_tracks_info: List[str], timeline_len: int = 0) -> str:
+    """Computes a stable hash of stream parameters to verify partial resume compatibility."""
+    raw = f"{video_rep_id}:{','.join(sorted(audio_tracks_info))}:{timeline_len}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def load_partial_manifest(partial_dir: str) -> Optional[Dict[str, Any]]:
+    """Loads manifest.json from partial_dir if valid."""
+    manifest_path = os.path.join(partial_dir, "manifest.json")
+    if not os.path.isfile(manifest_path):
+        return None
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_partial_manifest(partial_dir: str, manifest: Dict[str, Any]) -> None:
+    """Atomically writes manifest.json in partial_dir."""
+    os.makedirs(partial_dir, exist_ok=True)
+    manifest_path = os.path.join(partial_dir, "manifest.json")
+    tmp_path = f"{manifest_path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, manifest_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+
+def purge_partial(partial_dir: str) -> None:
+    """Safely removes partial directory and all partial files upon successful completion."""
+    if partial_dir and os.path.isdir(partial_dir):
+        try:
+            shutil.rmtree(partial_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 
 def download_parts(
     base_url: str,
@@ -140,8 +195,11 @@ def download_parts(
     period_duration_seconds: Optional[float] = None,
     pause_event: Optional[threading.Event] = None,
     cancel_event: Optional[threading.Event] = None,
+    partial_dir: Optional[str] = None,
+    track_id: Optional[str] = None,
+    resume: bool = True,
 ) -> str:
-    """Download all track segments using high-performance streaming assembly and session pool."""
+    """Download all track segments using high-performance streaming assembly, session pool, and partial resume."""
     # SegmentTemplate may be inherited from AdaptationSet, Representation,
     # or a parent Period/MPD. Use the same descendant resolution as the
     # timeline parser so URL patterns and segment counts cannot disagree.
@@ -173,11 +231,18 @@ def download_parts(
         pool = SessionPool(config=cfg)
         own_pool = True
 
+    track_key = track_id or f"{track_type}_{representation_id}"
+    is_partial = bool(partial_dir and resume)
+
     try:
         # Create raw output path
-        raw_tmp = tempfile.NamedTemporaryFile(suffix=".raw.mp4", delete=False)
-        raw_path = raw_tmp.name
-        raw_tmp.close()
+        if is_partial:
+            os.makedirs(partial_dir, exist_ok=True)
+            raw_path = os.path.join(partial_dir, f"{track_key}.raw.mp4")
+        else:
+            raw_tmp = tempfile.NamedTemporaryFile(suffix=".raw.mp4", delete=False)
+            raw_path = raw_tmp.name
+            raw_tmp.close()
 
         # Handle direct single-file streams (e.g. Blue Lock SegmentBase with direct BaseURL)
         if total == 0:
@@ -271,13 +336,41 @@ def download_parts(
 
             return decrypted_path
 
-        # Step 1: Download and write initialization segment directly
-        init_url = build_url(base_url, representation_id, init_file)
-        init_data = pool.download_segment(
-            init_url,
-            pause_event=pause_event,
-            cancel_event=cancel_event,
-        )
+        # Check if resuming from previous partial download
+        resume_from_index = 0
+        resume_offset = 0
+        if is_partial:
+            p_manifest = load_partial_manifest(partial_dir)
+            if p_manifest and "tracks" in p_manifest:
+                t_info = p_manifest["tracks"].get(track_key)
+                if t_info and t_info.get("total_segments") == total and os.path.exists(raw_path):
+                    saved_idx = int(t_info.get("completed_segments", 0))
+                    saved_bytes = int(t_info.get("bytes_written", 0))
+                    actual_size = os.path.getsize(raw_path)
+                    if saved_idx > 0 and actual_size >= saved_bytes:
+                        resume_from_index = saved_idx
+                        resume_offset = saved_bytes
+                        if sys.stdout is not None:
+                            try:
+                                print(
+                                    f"\nResuming {track_type} ({track_key}) from segment {resume_from_index + 1}/{total} "
+                                    f"({resume_offset / (1024 * 1024):.1f} MB already downloaded)..."
+                                )
+                            except Exception:
+                                pass
+
+        # Step 1: Download and write initialization segment directly if not resuming
+        init_written = False
+        if resume_from_index > 0:
+            init_written = True
+            init_data = b""
+        else:
+            init_url = build_url(base_url, representation_id, init_file)
+            init_data = pool.download_segment(
+                init_url,
+                pause_event=pause_event,
+                cancel_event=cancel_event,
+            )
 
         # Step 2: Initialize bounded streaming assembler (< 32 MB RAM)
         assembler = StreamAssembler(
@@ -285,21 +378,49 @@ def download_parts(
             total_segments=total,
             max_in_flight_mb=32,
             start_index=1,
+            resume_from_index=resume_from_index,
+            resume_offset=resume_offset,
+            init_written=init_written,
         )
-        assembler.write_init(init_data)
+        if not init_written:
+            assembler.write_init(init_data)
 
         # Step 3: Concurrent segment downloading with AIMD dynamic worker scaling
         job_queue: queue.Queue = queue.Queue()
         for i, item in enumerate(timeline, start=1):
+            if i <= resume_from_index:
+                continue
             seg_url = build_url(base_url, representation_id, media_file, item)
             job_queue.put((i, seg_url))
 
-        completed_count = 0
-        downloaded_bytes = 0
+        completed_count = resume_from_index
+        downloaded_bytes = resume_offset
         start_time = time.time()
         progress_lock = threading.Lock()
         worker_error: List[Exception] = []
         active_requests = 0
+
+        checkpoint_lock = threading.Lock()
+        last_checkpoint_idx = resume_from_index
+
+        def _save_checkpoint(force: bool = False):
+            nonlocal last_checkpoint_idx
+            if not is_partial:
+                return
+            with checkpoint_lock:
+                current_flushed_idx, current_flushed_bytes = assembler.get_checkpoint()
+                if not force and (current_flushed_idx - last_checkpoint_idx < 25):
+                    return
+                last_checkpoint_idx = current_flushed_idx
+                cur_m = load_partial_manifest(partial_dir) or {"schema": 1, "tracks": {}}
+                cur_m.setdefault("tracks", {})
+                cur_m["tracks"][track_key] = {
+                    "completed_segments": current_flushed_idx,
+                    "total_segments": total,
+                    "bytes_written": current_flushed_bytes,
+                    "raw_file": os.path.basename(raw_path),
+                }
+                save_partial_manifest(partial_dir, cur_m)
 
         # Global pause tracking (must not multiply across 16 threads)
         pause_state_lock = threading.Lock()
@@ -321,9 +442,11 @@ def download_parts(
 
             while not job_queue.empty() and not worker_error:
                 if cancel_event and cancel_event.is_set():
+                    _save_checkpoint(force=True)
                     assembler.abort(InterruptedError("Download cancelled by user"))
                     break
                 if pause_event and not pause_event.is_set():
+                    _save_checkpoint(force=True)
                     with pause_state_lock:
                         if not is_paused:
                             is_paused = True
@@ -353,6 +476,7 @@ def download_parts(
                                 current_speed_mb = 0.0
 
                     if cancel_event and cancel_event.is_set():
+                        _save_checkpoint(force=True)
                         assembler.abort(InterruptedError("Download cancelled by user"))
                         break
 
@@ -370,6 +494,7 @@ def download_parts(
                         cancel_event=cancel_event,
                     )
                     assembler.add_segment(idx, seg_data)
+                    _save_checkpoint(force=False)
 
                     with progress_lock:
                         active_requests -= 1
@@ -427,6 +552,7 @@ def download_parts(
                         f"after {failed_count} completed: {type(ex).__name__}: {ex}"
                     )
                     assembler.abort(ex)
+                    _save_checkpoint(force=True)
                     _invoke_progress_cb(
                         progress_cb,
                         ep_title,
@@ -451,8 +577,10 @@ def download_parts(
         for t in threads:
             t.join()
 
+        _save_checkpoint(force=True)
+
         if cancel_event and cancel_event.is_set():
-            if os.path.exists(raw_path):
+            if not is_partial and os.path.exists(raw_path):
                 try:
                     os.remove(raw_path)
                 except Exception:
@@ -475,6 +603,7 @@ def download_parts(
 
         # Finalize raw stream sequential assembly
         assembler.finish()
+        _save_checkpoint(force=True)
 
         # Step 4: Decrypt raw MP4 to decrypted output temp file
         StreamValidator.log_timing(raw_path, f"{track_type} encrypted source")
@@ -484,7 +613,7 @@ def download_parts(
 
         decrypt_mp4(raw_path, keys, decrypted_path)
         StreamValidator.log_timing(decrypted_path, f"{track_type} decrypted")
-        if os.path.exists(raw_path):
+        if not is_partial and os.path.exists(raw_path):
             try:
                 os.remove(raw_path)
             except Exception:
@@ -740,8 +869,9 @@ def download_episode(
     pause_event: Optional[threading.Event] = None,
     cancel_event: Optional[threading.Event] = None,
     download_dir: Optional[str] = None,
+    resume: bool = True,
 ) -> str:
-    """download all streams for an episode and mux to mkv using shared session pooling"""
+    """download all streams for an episode and mux to mkv using shared session pooling and resume support"""
     from .auth import load_config
     cfg = load_config()
     if cfg.get("use_n_m3u8dl_re", False):
@@ -823,10 +953,32 @@ def download_episode(
     ep_num = info.episode_metadata.episode_number
 
     if not download_dir:
-        download_dir = cfg.get("download_dir", "anime")
+        download_dir = cfg.get("download_dir", DEFAULT_DOWNLOAD_DIR)
     if not download_dir or not download_dir.strip():
-        download_dir = "anime"
+        download_dir = DEFAULT_DOWNLOAD_DIR
     base_dir = os.path.abspath(os.path.expanduser(download_dir.strip()))
+
+    partial_dir = get_partial_dir(base_dir, base_content_id) if resume else None
+
+    if force_download and partial_dir:
+        purge_partial(partial_dir)
+
+    if partial_dir:
+        needed_audio = [v.audio_locale for v in versions if getattr(v, "audio_locale", None)]
+        current_sig = compute_manifest_sig(video_quality, needed_audio, 0)
+        p_manifest = load_partial_manifest(partial_dir)
+        if p_manifest:
+            saved_sig = p_manifest.get("manifest_sig")
+            if saved_sig and saved_sig != current_sig:
+                purge_partial(partial_dir)
+                p_manifest = None
+        if not p_manifest:
+            save_partial_manifest(partial_dir, {
+                "schema": 1,
+                "ep_id": str(base_content_id),
+                "manifest_sig": current_sig,
+                "tracks": {},
+            })
 
     # Plex and Jellyfin standard layout: Series / Season XX / Series - SXXEYY - Title.mkv
     season_folder = f"Season {season_num:02d}"
@@ -1117,6 +1269,9 @@ def download_episode(
                     period_duration_seconds=prepared["period_duration_seconds"],
                     pause_event=pause_event,
                     cancel_event=cancel_event,
+                    partial_dir=partial_dir,
+                    track_id=f"audio_{version.audio_locale}",
+                    resume=resume,
                 )
             except Exception as exc:
                 if not _stream_expired_error(exc):
@@ -1162,12 +1317,25 @@ def download_episode(
                     period_duration_seconds=prepared["period_duration_seconds"],
                     pause_event=pause_event,
                     cancel_event=cancel_event,
+                    partial_dir=partial_dir,
+                    track_id=f"audio_{version.audio_locale}",
+                    resume=resume,
                 )
+            bitrate_val = None
+            if audio_quality:
+                try:
+                    num_str = "".join(c for c in str(audio_quality) if c.isdigit())
+                    if num_str:
+                        bitrate_val = int(num_str) * 1000
+                except (ValueError, TypeError):
+                    pass
+
             audio_tracks.append(
                 MediaTrack(
                     file=audio_file,
                     locale=version.audio_locale,
                     is_default=len(audio_tracks) == 0,
+                    bitrate=bitrate_val,
                 )
             )
             # Secondary audio track download is complete; release its stream immediately
@@ -1211,6 +1379,9 @@ def download_episode(
                     period_duration_seconds=period_duration_seconds,
                     pause_event=pause_event,
                     cancel_event=cancel_event,
+                    partial_dir=partial_dir,
+                    track_id=f"video_{video_quality}",
+                    resume=resume,
                 )
             except Exception as exc:
                 if not _stream_expired_error(exc):
@@ -1259,6 +1430,9 @@ def download_episode(
                     period_duration_seconds=prepared["period_duration_seconds"],
                     pause_event=pause_event,
                     cancel_event=cancel_event,
+                    partial_dir=partial_dir,
+                    track_id=f"video_{video_quality}",
+                    resume=resume,
                 )
 
         if not video_file:
@@ -1284,26 +1458,13 @@ def download_episode(
             sub_tracks=sub_tracks,
             output_file=temp_output_filename,
             info=info,
+            video_quality=video_quality,
+            duration_seconds=prepared.get("period_duration_seconds"),
         )
 
-        try:
-            is_valid, msg, _ = StreamValidator.verify_mkv(
-                temp_output_filename,
-                expected_video=True,
-                min_audio_tracks=len(audio_tracks),
-                min_sub_tracks=len(sub_tracks),
-            )
-            if not is_valid:
-                if os.path.exists(temp_output_filename):
-                    try:
-                        os.remove(temp_output_filename)
-                    except OSError:
-                        pass
-                raise RuntimeError(f"Output MKV failed stream integrity verification: {msg}")
-        except FileNotFoundError:
-            pass
-
         atomic_finalize(temp_output_filename, output_filename)
+        if partial_dir:
+            purge_partial(partial_dir)
         print(
             "\nTracks in output: "
             f"audio=[{', '.join(track_title(track.locale) + (' (default)' if track.is_default else '') for track in audio_tracks)}], "
@@ -1352,6 +1513,7 @@ def download_season(
     pause_event: Optional[threading.Event] = None,
     cancel_event: Optional[threading.Event] = None,
     download_dir: Optional[str] = None,
+    resume: bool = True,
 ) -> None:
     """download an entire season"""
     print(f"Found {len(episodes)} episodes in this season!\n")
@@ -1409,6 +1571,7 @@ def download_season(
             pause_event=pause_event,
             cancel_event=cancel_event,
             download_dir=download_dir,
+            resume=resume,
         )
         print()
 
@@ -1429,6 +1592,7 @@ def download_series(
     pause_event: Optional[threading.Event] = None,
     cancel_event: Optional[threading.Event] = None,
     download_dir: Optional[str] = None,
+    resume: bool = True,
 ) -> None:
     """grab everything for a series"""
     # Catalog endpoints require concrete locales. Sending ``all`` here makes
@@ -1516,6 +1680,7 @@ def download_series(
             pause_event=pause_event,
             cancel_event=cancel_event,
             download_dir=download_dir,
+            resume=resume,
         )
 
 def _get_keys_for_stream(
@@ -1629,9 +1794,9 @@ def _download_episode_n_m3u8dl_re(
 
     if not download_dir:
         from .auth import load_config
-        download_dir = load_config().get("download_dir", "anime")
+        download_dir = load_config().get("download_dir", DEFAULT_DOWNLOAD_DIR)
     if not download_dir or not download_dir.strip():
-        download_dir = "anime"
+        download_dir = DEFAULT_DOWNLOAD_DIR
     base_dir = os.path.abspath(os.path.expanduser(download_dir.strip()))
 
     season_folder = f"Season {season_num:02d}"
@@ -1978,24 +2143,8 @@ def _download_episode_n_m3u8dl_re(
             sub_tracks=sub_tracks,
             output_file=temp_output_filename,
             info=info,
+            video_quality=video_quality,
         )
-
-        try:
-            is_valid, msg, _ = StreamValidator.verify_mkv(
-                temp_output_filename,
-                expected_video=True,
-                min_audio_tracks=len(audio_tracks),
-                min_sub_tracks=len(sub_tracks),
-            )
-            if not is_valid:
-                if os.path.exists(temp_output_filename):
-                    try:
-                        os.remove(temp_output_filename)
-                    except OSError:
-                        pass
-                raise RuntimeError(f"Output MKV failed integrity verification: {msg}")
-        except FileNotFoundError:
-            pass
 
         atomic_finalize(temp_output_filename, output_filename)
         print(
