@@ -49,15 +49,13 @@ from crunchyroll.http_client import CrunchyrollHttpClient
 from crunchyroll.session_pool import ConcurrencyConfig
 
 
-def ensure_webview2() -> None:
-    """check if WebView2 is installed, and auto-install it if not"""
+def is_webview2_installed() -> bool:
+    """check if WebView2 runtime is installed on Windows"""
     if sys.platform != "win32":
-        return
+        return True
 
-    import winreg
-
-    def is_installed() -> bool:
-        # check both HKLM and HKCU, 64-bit and 32-bit registry hives
+    try:
+        import winreg
         keys = [
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"),
@@ -72,9 +70,14 @@ def ensure_webview2() -> None:
                     return True
             except Exception:
                 pass
-        return False
+    except Exception:
+        pass
+    return False
 
-    if is_installed():
+
+def ensure_webview2() -> None:
+    """check if WebView2 is installed, and auto-install it if not"""
+    if sys.platform != "win32" or is_webview2_installed():
         return
 
     # not installed — download the evergreen bootstrapper and run it silently
@@ -160,6 +163,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
     )
 
     dl_dir = getattr(args, "output_dir", None)
+    resume_flag = getattr(args, "resume", True)
     if content_type == "episode":
         info = get_episode_info(client, content_id)
         download_episode(
@@ -175,6 +179,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             force_download=getattr(args, "force_download", False),
             server_index=server_index,
             download_dir=dl_dir,
+            resume=resume_flag,
         )
     elif content_type == "series":
         download_series(
@@ -190,6 +195,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             force_download=getattr(args, "force_download", False),
             server_index=server_index,
             download_dir=dl_dir,
+            resume=resume_flag,
         )
     elif content_type == "season":
         episodes = get_season_episodes(client, content_id, primary_audio, primary_subs)
@@ -205,6 +211,7 @@ def process_url(client: CrunchyrollHttpClient, url: str, args: argparse.Namespac
             force_download=getattr(args, "force_download", False),
             server_index=server_index,
             download_dir=dl_dir,
+            resume=resume_flag,
         )
 
 
@@ -224,6 +231,11 @@ def prompt_star_if_first_run() -> None:
 
 
 def main() -> None:
+    from crunchyroll.logger import setup_logging, set_logging_enabled
+    from crunchyroll.auth import load_config, save_config
+    cfg = load_config()
+    setup_logging(enabled=cfg.get("enable_logging", True))
+
     parser = argparse.ArgumentParser(
         description="Downloads anime from Crunchyroll and outputs them in an MKV file."
     )
@@ -316,6 +328,27 @@ def main() -> None:
         help="Redownload completed episodes and atomically replace existing MKV files",
     )
     parser.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/disable cross-run resume for interrupted downloads (default: enabled)",
+    )
+    parser.add_argument(
+        "--clean-partials",
+        action="store_true",
+        help="Purge all partial segment caches in the download directory and exit",
+    )
+    parser.add_argument(
+        "--no-log",
+        action="store_true",
+        help="Disable persistent file logging to crunchyroller.log",
+    )
+    parser.add_argument(
+        "--log",
+        action="store_true",
+        help="Enable persistent file logging to crunchyroller.log (enabled by default)",
+    )
+    parser.add_argument(
         "positional_url",
         nargs="?",
         default="",
@@ -323,7 +356,25 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.no_log:
+        set_logging_enabled(False)
+    elif args.log:
+        set_logging_enabled(True)
+
     prompt_star_if_first_run()
+
+    if args.clean_partials:
+        cfg = load_config()
+        dl_dir = args.output_dir or cfg.get("download_dir", "anime")
+        partials_dir = os.path.join(dl_dir, ".cr_partials")
+        if os.path.isdir(partials_dir):
+            import shutil
+            shutil.rmtree(partials_dir, ignore_errors=True)
+            print(f"Purged partial download cache: {partials_dir}")
+        else:
+            print(f"No partial download cache found at: {partials_dir}")
+        return
+
     if args.positional_url and not args.url:
         args.url = args.positional_url
 
@@ -333,8 +384,6 @@ def main() -> None:
         from web_gui import start_gui
         start_gui(port=8000, use_browser=args.browser)
         return
-
-    from crunchyroll.auth import load_config, save_config
 
     etp_rt = ""
     if args.etp_rt:

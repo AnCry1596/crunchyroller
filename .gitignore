@@ -15,6 +15,7 @@ bin/*
 build/
 dist/
 *.spec
+!crunchyroller.spec
 *.zip
 android/
 
@@ -23,6 +24,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.venv
 .venv/
 env/
 venv/
@@ -35,6 +37,8 @@ anime/
 *.ass
 *.tmp
 *.raw.mp4
+.cr_partials/
+queue_state.json
 
 # IDE & OS Files
 .vscode/
