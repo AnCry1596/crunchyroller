@@ -1,83 +1,26 @@
 # -*- mode: python ; coding: utf-8 -*-
-import os
+from PyInstaller.utils.hooks import collect_all
 
-root = os.path.dirname(os.path.abspath(SPEC))
+datas = [('C:\\Users\\vure\\crunchyroller\\web', 'web'), ('C:\\Users\\vure\\crunchyroller\\ffmpeg.exe', '.')]
+binaries = []
+hiddenimports = ['Crypto', 'pywidevine', 'pymp4', 'curl_cffi', 'webview', 'web_gui', 'tkinter', 'tkinter.filedialog', 'xmltodict', 'sqlite3']
+tmp_ret = collect_all('crunchyroll')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
 
 a = Analysis(
-    ['main.py'],
-    pathex=[root],
-    binaries=[],
-    datas=[
-        (os.path.join(root, 'web'), 'web'),
-    ] + ([(os.path.join(root, 'ffmpeg.exe'), '.')] if os.path.exists(os.path.join(root, 'ffmpeg.exe')) else []),
-    hiddenimports=[
-        # pywebview backends
-        'webview',
-        'webview.platforms.winforms',
-        'webview.platforms.edgechromium',
-        'webview.platforms.mshtml',
-        # pycryptodome
-        'Crypto',
-        'Crypto.Cipher',
-        'Crypto.Cipher.AES',
-        'Crypto.PublicKey',
-        'Crypto.PublicKey.RSA',
-        'Crypto.Signature',
-        'Crypto.Signature.pss',
-        'Crypto.Hash',
-        'Crypto.Hash.SHA256',
-        'Crypto.Util',
-        'Crypto.Util.Padding',
-        # pywidevine
-        'pywidevine',
-        'pywidevine.cdm',
-        'pywidevine.device',
-        'pywidevine.pssh',
-        'pywidevine.session',
-        # curl_cffi
-        'curl_cffi',
-        'curl_cffi.requests',
-        # xmltodict / pymp4
-        'xmltodict',
-        'pymp4',
-        'pymp4.parser',
-        # protobuf
-        'google.protobuf',
-        'google.protobuf.descriptor',
-        'google.protobuf.descriptor_pool',
-        'google.protobuf.message',
-        'google.protobuf.reflection',
-        # windows-only modules (safe to include – ignored on non-win builds)
-        'winreg',
-        'ctypes',
-        'ctypes.wintypes',
-        # stdlib that PyInstaller sometimes misses
-        'sqlite3',
-        'glob',
-        'shutil',
-        'tempfile',
-        'base64',
-        'threading',
-        'http.server',
-        'webbrowser',
-        'urllib.parse',
-        'urllib.request',
-    ],
+    ['C:\\Users\\vure\\crunchyroller\\main.py'],
+    pathex=[],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        'tkinter',
-        'matplotlib',
-        'numpy',
-        'PIL',
-        'PyQt5',
-        'PyQt6',
-    ],
+    excludes=[],
     noarchive=False,
     optimize=0,
 )
-
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -96,9 +39,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=os.path.join(root, 'web', 'icon.ico'),
+    icon=['C:\\Users\\vure\\crunchyroller\\web\\icon.ico'],
 )
-
 coll = COLLECT(
     exe,
     a.binaries,
