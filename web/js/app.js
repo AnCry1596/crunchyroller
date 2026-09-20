@@ -5,6 +5,7 @@ let ddVideo = null;
 let ddAudioQual = null;
 let ddAudio = null;
 let ddSubs = null;
+let ddBitrate = null;
 
 const VIDEO_OPTIONS = [
   { val: '1080p', label: '1080p' },
@@ -17,6 +18,11 @@ const VIDEO_OPTIONS = [
 const AUDIO_QUAL_OPTIONS = [
   { val: '192k', label: '192k' },
   { val: '96k', label: '96k' }
+];
+
+const BITRATE_OPTIONS = [
+  { val: 'highest', label: 'highest (default)' },
+  { val: 'lowest', label: 'data saver (lowest)' }
 ];
 
 const AUDIO_OPTIONS = [
@@ -308,6 +314,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   ddAudioQual = new CheckboxDropdown('dd-audio-qual', 'aq', AUDIO_QUAL_OPTIONS, '192k', () => saveCfg(), false);
   ddAudio = new CheckboxDropdown('dd-audio', 'al', AUDIO_OPTIONS, 'ja-JP', () => saveCfg(), true);
   ddSubs = new CheckboxDropdown('dd-subs', 'sl', SUBS_OPTIONS, 'en-US', () => saveCfg(), true);
+  ddBitrate = new CheckboxDropdown('dd-bitrate', 'bitrate-mode', BITRATE_OPTIONS, 'highest', () => saveCfg(), false);
 
   const state = await api('/api/state');
   applyState(state);
@@ -392,6 +399,13 @@ function applyState(state) {
       ddSubs.setValue(state.config.subs_lang, false);
     } else if (state.config.subs_lang) {
       document.getElementById('sl').value = state.config.subs_lang;
+    }
+
+    if (ddBitrate && state.config.bitrate_mode) {
+      ddBitrate.setValue(state.config.bitrate_mode, false);
+    } else if (state.config.bitrate_mode) {
+      const bmEl = document.getElementById('bitrate-mode');
+      if (bmEl) bmEl.value = state.config.bitrate_mode;
     }
     const forceDownload = document.getElementById('force-download');
     if (forceDownload) forceDownload.checked = Boolean(state.config.force_download);
@@ -524,6 +538,7 @@ async function saveCfg() {
   const workersVal = parseInt(document.getElementById('workers-slider')?.value || '16', 10);
   const resumeVal = Boolean(document.getElementById('enable-resume')?.checked);
   const loggingVal = Boolean(document.getElementById('enable-logging')?.checked);
+  const bitrateVal = ddBitrate ? ddBitrate.value : (document.getElementById('bitrate-mode')?.value || 'highest');
 
   await api('/api/config', {
     video_quality: vqVal,
@@ -535,6 +550,7 @@ async function saveCfg() {
     workers: workersVal,
     enable_resume: resumeVal,
     enable_logging: loggingVal,
+    bitrate_mode: bitrateVal,
   });
 
   updateQuickFormatBar();
@@ -1052,6 +1068,7 @@ async function startDl() {
   const dlDirVal = (document.getElementById('download-dir') || {}).value || '';
   const workersVal = parseInt(document.getElementById('workers-slider')?.value || '16', 10);
   const resumeVal = Boolean(document.getElementById('enable-resume')?.checked);
+  const bitrateVal = ddBitrate ? ddBitrate.value : (document.getElementById('bitrate-mode')?.value || 'highest');
 
   const res = await api('/api/download', {
     items: selected,
@@ -1065,6 +1082,7 @@ async function startDl() {
     download_dir: dlDirVal.trim() || 'anime',
     workers: workersVal,
     enable_resume: resumeVal,
+    bitrate_mode: bitrateVal,
   });
 
   if (!res.success) {

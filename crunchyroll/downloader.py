@@ -785,6 +785,7 @@ def _prepare_media_track(
     video_quality: str,
     debug: bool,
     server_index: int = 0,
+    bitrate_mode: str = "highest",
 ) -> Dict[str, object]:
     """Fetch a current MPD and license keys and resolve its media sets."""
     manifest = parse_manifest(client, ep.manifest_url, debug=debug)
@@ -833,10 +834,10 @@ def _prepare_media_track(
         if len(video_mirrors) > 1:
             print(f"[CDN] {len(video_mirrors)} mirrors detected in manifest for video track (active: #{server_index + 1})")
 
-    audio_base_url, audio_rep_id = get_base_url(audio_set, False, audio_quality, server_index=server_index)
+    audio_base_url, audio_rep_id = get_base_url(audio_set, False, audio_quality, server_index=server_index, bitrate_mode=bitrate_mode)
     if not audio_base_url or not audio_rep_id:
         raise RuntimeError("failed to get the audio base URL")
-    video_base_url, video_rep_id = get_base_url(video_set, True, video_quality, server_index=server_index)
+    video_base_url, video_rep_id = get_base_url(video_set, True, video_quality, server_index=server_index, bitrate_mode=bitrate_mode)
     if not video_base_url or not video_rep_id:
         raise RuntimeError("failed to get the video base URL")
 
@@ -870,10 +871,13 @@ def download_episode(
     cancel_event: Optional[threading.Event] = None,
     download_dir: Optional[str] = None,
     resume: bool = True,
+    bitrate_mode: Optional[str] = None,
 ) -> str:
     """download all streams for an episode and mux to mkv using shared session pooling and resume support"""
     from .auth import load_config
     cfg = load_config()
+    if not bitrate_mode:
+        bitrate_mode = cfg.get("bitrate_mode", "highest")
     if cfg.get("use_n_m3u8dl_re", False):
         return _download_episode_n_m3u8dl_re(
             client=client,
@@ -1242,7 +1246,7 @@ def download_episode(
                 playback_cache[content_id] = ep
 
             prepared = _prepare_media_track(
-                client, ep, content_id, audio_quality, video_quality, debug, server_index=server_index
+                client, ep, content_id, audio_quality, video_quality, debug, server_index=server_index, bitrate_mode=bitrate_mode
             )
 
             if i == 0:
@@ -1303,7 +1307,7 @@ def download_episode(
                 playback_cache[content_id] = ep
                 active_streams[content_id] = ep.token
                 prepared = _prepare_media_track(
-                    client, ep, content_id, audio_quality, video_quality, debug, server_index=server_index
+                    client, ep, content_id, audio_quality, video_quality, debug, server_index=server_index, bitrate_mode=bitrate_mode
                 )
                 audio_file = download_parts(
                     prepared["audio_base_url"],
@@ -1417,6 +1421,7 @@ def download_episode(
                     video_quality,
                     debug,
                     server_index=server_index,
+                    bitrate_mode=bitrate_mode,
                 )
                 video_file = download_parts(
                     prepared["video_base_url"],
@@ -1514,6 +1519,7 @@ def download_season(
     cancel_event: Optional[threading.Event] = None,
     download_dir: Optional[str] = None,
     resume: bool = True,
+    bitrate_mode: Optional[str] = None,
 ) -> None:
     """download an entire season"""
     print(f"Found {len(episodes)} episodes in this season!\n")
@@ -1572,6 +1578,7 @@ def download_season(
             cancel_event=cancel_event,
             download_dir=download_dir,
             resume=resume,
+            bitrate_mode=bitrate_mode,
         )
         print()
 
@@ -1593,6 +1600,7 @@ def download_series(
     cancel_event: Optional[threading.Event] = None,
     download_dir: Optional[str] = None,
     resume: bool = True,
+    bitrate_mode: Optional[str] = None,
 ) -> None:
     """grab everything for a series"""
     # Catalog endpoints require concrete locales. Sending ``all`` here makes
@@ -1681,6 +1689,7 @@ def download_series(
             cancel_event=cancel_event,
             download_dir=download_dir,
             resume=resume,
+            bitrate_mode=bitrate_mode,
         )
 
 def _get_keys_for_stream(

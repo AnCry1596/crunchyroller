@@ -129,49 +129,115 @@ def get_base_url(
     is_video_set: bool,
     quality: str,
     server_index: int = 0,
+    bitrate_mode: str = "highest",
 ) -> Tuple[Optional[str], Optional[str]]:
-    """find base url and representation id for target quality, supporting CDN mirror selection"""
+    """find base url and representation id for target quality, respecting bitrate_mode ('highest' or 'lowest')"""
     reps = [e for e in adaptation_set if _clean_tag(e.tag) == "Representation"]
-
-    for rep in reps:
-        rep_id = rep.attrib.get("id", "")
-        height = rep.attrib.get("height")
-        bandwidth = rep.attrib.get("bandwidth")
-
-        candidate_urls = _collect_base_urls(rep, adaptation_set)
-        base_url = None
-        if candidate_urls:
-            selected_idx = min(max(0, server_index), len(candidate_urls) - 1)
-            base_url = candidate_urls[selected_idx]
-            if len(candidate_urls) > 1 and selected_idx > 0:
-                print(f"[CDN] Selected mirror #{selected_idx + 1} of {len(candidate_urls)} for {quality}")
-
-        if is_video_set:
-            target_height = quality.replace("p", "")
-            if height and str(height) == target_height:
-                return base_url, rep_id
-        else:
-            if "audio/" in rep_id and quality in rep_id:
-                return base_url, rep_id
-            elif bandwidth is not None:
-                bw_val = int(bandwidth)
-                num = quality.replace("k", "")
-                if num == "192" and bw_val >= 192000:
-                    return base_url, rep_id
-                elif num == "128" and bw_val >= 128000:
-                    return base_url, rep_id
-                elif num == "96" and bw_val >= 96000:
-                    return base_url, rep_id
-
     if not reps:
         return None, None
 
-    first_rep = reps[0]
-    first_id = first_rep.attrib.get("id", "")
-    candidate_urls = _collect_base_urls(first_rep, adaptation_set)
-    base_url = candidate_urls[min(max(0, server_index), len(candidate_urls) - 1)] if candidate_urls else None
-    print(f"Audio quality {quality} not found, deferring to {first_id}")
-    return base_url, first_id
+    def _int_attr(elem: ET.Element, attr: str, default: int = 0) -> int:
+        val = elem.attrib.get(attr)
+        if val is not None:
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                pass
+        return default
+
+    def _rep_height(elem: ET.Element) -> int:
+        h = _int_attr(elem, "height")
+        if h > 0:
+            return h
+        rid = elem.attrib.get("id", "")
+        digits = "".join(filter(str.isdigit, rid))
+        if digits and int(digits) in (240, 360, 480, 720, 1080, 1440, 2160):
+            return int(digits)
+        return 0
+
+    chosen_rep: Optional[ET.Element] = None
+    clean_q = (quality or "").lower().strip()
+    prefer_lowest = (
+        (bitrate_mode or "").lower().strip() in ("lowest", "data_saver", "low", "min", "worst")
+        or ":low" in clean_q
+        or "-low" in clean_q
+    )
+
+    if is_video_set:
+        v_digits = "".join(filter(str.isdigit, clean_q))
+        is_best = clean_q in ("best", "auto", "max") or not v_digits
+
+        if is_best:
+            reps_sorted = sorted(
+                reps,
+                key=lambda r: (_rep_height(r), _int_attr(r, "bandwidth") if not prefer_lowest else -_int_attr(r, "bandwidth")),
+                reverse=True,
+            )
+            chosen_rep = reps_sorted[0] if reps_sorted else None
+        else:
+            target_h = int(v_digits)
+            exact_matches = [
+                r for r in reps if _rep_height(r) == target_h
+            ]
+            if exact_matches:
+                # Sort exact resolution matches by bandwidth (descending if highest, ascending if lowest)
+                exact_matches.sort(key=lambda r: _int_attr(r, "bandwidth"), reverse=not prefer_lowest)
+                chosen_rep = exact_matches[0]
+            else:
+                below = [r for r in reps if _rep_height(r) <= target_h]
+                if below:
+                    below.sort(
+                        key=lambda r: (_rep_height(r), _int_attr(r, "bandwidth") if not prefer_lowest else -_int_attr(r, "bandwidth")),
+                        reverse=True,
+                    )
+                    chosen_rep = below[0]
+                else:
+                    above = sorted(
+                        reps,
+                        key=lambda r: (_rep_height(r), -_int_attr(r, "bandwidth") if not prefer_lowest else _int_attr(r, "bandwidth")),
+                    )
+                    chosen_rep = above[0]
+    else:
+        a_digits = "".join(filter(str.isdigit, clean_q))
+        is_best = clean_q in ("best", "auto", "max") or not a_digits
+
+        if is_best:
+            reps_sorted = sorted(reps, key=lambda r: _int_attr(r, "bandwidth"), reverse=not prefer_lowest)
+            chosen_rep = reps_sorted[0] if reps_sorted else None
+        else:
+            target_k = int(a_digits)
+            target_bps = target_k * 1000
+
+            id_matches = [
+                r for r in reps
+                if f"{target_k}k" in r.attrib.get("id", "").lower()
+                or f"{target_k}" in r.attrib.get("id", "").lower()
+            ]
+            if id_matches:
+                id_matches.sort(key=lambda r: _int_attr(r, "bandwidth"), reverse=not prefer_lowest)
+                chosen_rep = id_matches[0]
+            else:
+                bw_matches = [r for r in reps if _int_attr(r, "bandwidth") >= target_bps]
+                if bw_matches:
+                    bw_matches.sort(key=lambda r: _int_attr(r, "bandwidth"), reverse=not prefer_lowest)
+                    chosen_rep = bw_matches[0]
+                else:
+                    reps_sorted = sorted(reps, key=lambda r: _int_attr(r, "bandwidth"), reverse=not prefer_lowest)
+                    chosen_rep = reps_sorted[0] if reps_sorted else None
+
+    if chosen_rep is None:
+        chosen_rep = reps[0]
+
+    rep_id = chosen_rep.attrib.get("id", "")
+    candidate_urls = _collect_base_urls(chosen_rep, adaptation_set)
+    base_url = None
+    if candidate_urls:
+        selected_idx = min(max(0, server_index), len(candidate_urls) - 1)
+        base_url = candidate_urls[selected_idx]
+        if len(candidate_urls) > 1 and selected_idx > 0:
+            print(f"[CDN] Selected mirror #{selected_idx + 1} of {len(candidate_urls)} for {quality}")
+
+    return base_url, rep_id
 
 
 def expand_timeline(

@@ -40,6 +40,7 @@ class QueueItem:
     workers: int = 16
     enable_hedging: bool = False
     enable_resume: bool = True
+    bitrate_mode: str = "highest"
     status: str = "queued"  # queued | running | paused | completed | failed | canceled | interrupted
     error: Optional[str] = None
     created_at: float = field(default_factory=time.time)
@@ -76,6 +77,7 @@ class QueueItem:
             "workers": self.workers,
             "enable_hedging": self.enable_hedging,
             "enable_resume": self.enable_resume,
+            "bitrate_mode": self.bitrate_mode,
             "status": self.status,
             "error": self.error,
             "created_at": self.created_at,
@@ -104,6 +106,7 @@ class QueueItem:
             workers=int(d.get("workers", 16)),
             enable_hedging=bool(d.get("enable_hedging", False)),
             enable_resume=bool(d.get("enable_resume", True)),
+            bitrate_mode=str(d.get("bitrate_mode", "highest")),
             status=str(d.get("status", "queued")),
             error=d.get("error"),
             created_at=float(d.get("created_at", time.time())),
@@ -427,6 +430,7 @@ class DownloadQueue:
             workers = int(item.get("workers") or opts.get("workers") or 16)
             enable_hedging = bool(item.get("enable_hedging", opts.get("enable_hedging", False)))
             enable_resume = bool(item.get("enable_resume", opts.get("enable_resume", True)))
+            bitrate_mode = str(item.get("bitrate_mode") or opts.get("bitrate_mode") or "highest")
         else:
             ep_id = str(item).strip()
             title = ""
@@ -442,6 +446,7 @@ class DownloadQueue:
             workers = int(opts.get("workers") or 16)
             enable_hedging = bool(opts.get("enable_hedging", False))
             enable_resume = bool(opts.get("enable_resume", True))
+            bitrate_mode = str(opts.get("bitrate_mode") or "highest")
 
         if not ep_id:
             return None
@@ -470,6 +475,7 @@ class DownloadQueue:
                 workers=workers,
                 enable_hedging=enable_hedging,
                 enable_resume=enable_resume,
+                bitrate_mode=bitrate_mode,
                 status="queued",
                 task_id=task_id or "",
             )
@@ -957,6 +963,7 @@ class DownloadQueue:
                     cancel_event=self.cancel_event,
                     download_dir=job.download_dir,
                     resume=getattr(job, "enable_resume", True),
+                    bitrate_mode=getattr(job, "bitrate_mode", "highest"),
                     concurrency_config=ConcurrencyConfig(
                         min_workers=max(4, getattr(job, "workers", 16) // 2),
                         max_workers=max(4, min(32, getattr(job, "workers", 16))),

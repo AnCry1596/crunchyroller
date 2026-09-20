@@ -90,6 +90,7 @@ STATE = {
         "enable_hedging": bool(initial_cfg.get("enable_hedging", False)),
         "enable_resume": bool(initial_cfg.get("enable_resume", True)),
         "enable_logging": bool(initial_cfg.get("enable_logging", True)),
+        "bitrate_mode":  str(initial_cfg.get("bitrate_mode", "highest")),
     },
     "download": {
         "status":      "idle",
@@ -277,6 +278,7 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
             workers_cnt = max(4, min(32, int(STATE["config"].get("workers", 16))))
             hedging = bool(STATE["config"].get("enable_hedging", False))
             resume = bool(STATE["config"].get("enable_resume", True))
+            bitrate_mode = str(STATE["config"].get("bitrate_mode", "highest"))
             download_episode(
                 client=client, base_content_id=ep_id, info=info,
                 audio_langs=a_langs, subs_langs=s_langs,
@@ -286,6 +288,7 @@ def _run_download(items, vq, aq, al, sl, force_download=False):
                 cancel_event=DOWNLOAD_CANCEL_EVENT,
                 download_dir=download_dir,
                 resume=resume,
+                bitrate_mode=bitrate_mode,
                 concurrency_config=ConcurrencyConfig(
                     min_workers=max(4, workers_cnt // 2),
                     max_workers=workers_cnt,
@@ -414,7 +417,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
                 # Keep STATE in sync with config.json on disk so manual user edits are immediately honored
                 disk_cfg = load_config()
-                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "workers", "enable_hedging", "enable_resume", "enable_logging"):
+                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "workers", "enable_hedging", "enable_resume", "enable_logging", "bitrate_mode"):
                     if k in disk_cfg:
                         if k == "workers":
                             try:
@@ -631,7 +634,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/config":
             with LOCK:
                 disk_cfg = load_config()
-                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "download_dir", "workers", "enable_hedging", "enable_resume", "enable_logging"):
+                for k in ("video_quality", "audio_quality", "audio_lang", "subs_lang", "force_download", "download_dir", "workers", "enable_hedging", "enable_resume", "enable_logging", "bitrate_mode"):
                     if k in data:
                         val = data[k]
                         if k == "download_dir":
@@ -776,6 +779,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             workers = int(data.get("workers", c.get("workers", 16)))
             enable_hedging = bool(data.get("enable_hedging", c.get("enable_hedging", False)))
             enable_resume = bool(data.get("enable_resume", c.get("enable_resume", True)))
+            bitrate_mode = str(data.get("bitrate_mode") or c.get("bitrate_mode") or "highest").strip()
 
             dl_dir = str(data.get("download_dir") or c.get("download_dir") or DEFAULT_DOWNLOAD_DIR).strip() or DEFAULT_DOWNLOAD_DIR
             task_title = str(data.get("task_title") or data.get("series_title") or "").strip()
@@ -789,6 +793,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "workers": workers,
                 "enable_hedging": enable_hedging,
                 "enable_resume": enable_resume,
+                "bitrate_mode": bitrate_mode,
             }, task_title=task_title)
             with LOCK:
                 STATE["download"]["status"] = "running"
@@ -824,17 +829,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             _log("active episode skipped by user")
             self._json({"success": True, "status": "skipped"})
 
-        elif path in ("/api/download/cancel", "/api/download/cancel-current"):
-            if data.get("all") or data.get("cancel_all"):
-                QUEUE.cancel_all()
-                DOWNLOAD_CANCEL_EVENT.set()
-                DOWNLOAD_PAUSE_EVENT.set()
-                with LOCK:
+        elif path == "/api/download/cancel-current":
+            job_id = str(data.get("id") or data.get("job_id") or "").strip() or None
+            QUEUE.cancel_current(job_id=job_id)
+            DOWNLOAD_CANCEL_EVENT.set()
+            DOWNLOAD_PAUSE_EVENT.set()
+            with LOCK:
+                if QUEUE.queued_count == 0 and not QUEUE.active_job:
                     STATE["download"]["status"] = "canceled"
-                    STATE["download"]["speed"] = ""
-                _log("all downloads cancelled by user")
-                self._json({"success": True, "status": "canceled"})
-            else:
+                STATE["download"]["speed"] = ""
+            _log("active episode cancelled by user")
+            self._json({"success": True, "status": "canceled"})
+
+        elif path in ("/api/download/cancel", "/api/download/cancel-all"):
+            if data.get("current_only"):
                 job_id = str(data.get("id") or data.get("job_id") or "").strip() or None
                 QUEUE.cancel_current(job_id=job_id)
                 DOWNLOAD_CANCEL_EVENT.set()
@@ -845,16 +853,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     STATE["download"]["speed"] = ""
                 _log("active episode cancelled by user")
                 self._json({"success": True, "status": "canceled"})
-
-        elif path == "/api/download/cancel-all":
-            QUEUE.cancel_all()
-            DOWNLOAD_CANCEL_EVENT.set()
-            DOWNLOAD_PAUSE_EVENT.set()
-            with LOCK:
-                STATE["download"]["status"] = "canceled"
-                STATE["download"]["speed"] = ""
-            _log("all downloads cancelled by user")
-            self._json({"success": True, "status": "canceled"})
+            else:
+                QUEUE.cancel_all()
+                DOWNLOAD_CANCEL_EVENT.set()
+                DOWNLOAD_PAUSE_EVENT.set()
+                with LOCK:
+                    STATE["download"]["status"] = "canceled"
+                    STATE["download"]["speed"] = ""
+                _log("all downloads cancelled by user")
+                self._json({"success": True, "status": "canceled"})
 
         elif path == "/api/queue/remove":
             job_id = str(data.get("id", "")).strip()
