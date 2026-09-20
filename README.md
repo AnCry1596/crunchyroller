@@ -165,8 +165,8 @@ If you run into an error, want to inspect download details, or need to attach lo
 
 ## FAQ
 
-**Can I download full seasons or batch download?**  
-Yes! You can paste a series link to queue up entire seasons directly in the Web UI, or pass a text file of URLs via the CLI (`--file urls.txt`).
+**Why do I get a lower bitrate version when downloading?**  
+Not every title on Crunchyroll has a separate high-bitrate 1080p stream. Some releases (like *Gachiakuta* E1) only have a single standard 1080p stream on Crunchyroll's servers, while others (like *Chainsaw Man*) offer both 1080p low and 1080p high bitrate variants. If a high-bitrate stream exists, Crunchyroller downloads it by default (unless you select Data-Saver mode in settings). If Crunchyroll only provides one stream, that is what gets fetched.
 
 **Does it download in 1080p?**  
 Yes, it fetches the highest available stream quality (up to 1080p source) by default, or you can pick 720p/480p if you want smaller file sizes.
