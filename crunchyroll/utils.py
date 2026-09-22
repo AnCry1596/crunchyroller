@@ -93,3 +93,41 @@ def sanitize_filename(s: str) -> str:
 
     return res.strip(" ._-") or "Unknown"
 
+
+def resolve_season_folder(
+    series_title: str,
+    season_number: int,
+    season_title: str = "",
+) -> str:
+    """
+    Resolves the folder name for a season or story arc.
+    If Crunchyroll provides a distinct arc name (e.g. 'Mugen Train Arc', 'Entertainment District Arc', 'OADs'),
+    uses that cleaned arc name. Otherwise falls back to standard 'Season XX'.
+    """
+    clean = (season_title or "").strip()
+    if series_title and clean.lower().startswith(series_title.lower()):
+        clean = clean[len(series_title):].strip(" :-–—")
+
+    # Strip any trailing dub/audio tags like (English Dub), [English Dub], (Sub), etc.
+    clean_no_dub = re.sub(
+        r"\s*[\(\[](?:dub|audio|sub|simul|cut|russian|german|spanish|french|portuguese|hindi|arabic|castilian|italian|english)[^\)\]]*[\)\]]",
+        "",
+        clean,
+        flags=re.I,
+    ).strip(" :-–—")
+    lower_no_dub = clean_no_dub.lower()
+
+    # If formatted as "Season X: Arc Name" or "Season X - Arc Name", extract the Arc Name
+    m = re.match(r"^season\s*\d+\s*[:\-–—]\s*(.+)$", clean_no_dub, flags=re.I)
+    if m:
+        clean_no_dub = m.group(1).strip(" :-–—")
+        lower_no_dub = clean_no_dub.lower()
+
+    # If it is empty, or merely a generic "Season X" / "S1" label, use formatted Season XX
+    if not clean_no_dub or re.fullmatch(r"season\s*\d+", lower_no_dub) or re.fullmatch(r"s\d+", lower_no_dub):
+        return f"Season {season_number:02d}"
+
+    return sanitize_filename(clean_no_dub)
+
+
+

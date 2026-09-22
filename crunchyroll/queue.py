@@ -49,6 +49,7 @@ class QueueItem:
     output_file: Optional[str] = None
     file_size_mb: float = 0.0
     task_id: str = ""
+    season_title: str = ""
 
     @property
     def label(self) -> str:
@@ -68,6 +69,7 @@ class QueueItem:
             "season_number": self.season_number,
             "episode_number": self.episode_number,
             "series_title": self.series_title,
+            "season_title": self.season_title,
             "video_quality": self.video_quality,
             "audio_quality": self.audio_quality,
             "audio_langs": self.audio_langs,
@@ -97,6 +99,7 @@ class QueueItem:
             season_number=int(d.get("season_number", 0)),
             episode_number=int(d.get("episode_number", 0)),
             series_title=str(d.get("series_title", "")),
+            season_title=str(d.get("season_title", "")),
             video_quality=str(d.get("video_quality", "1080p")),
             audio_quality=str(d.get("audio_quality", "192k")),
             audio_langs=list(d.get("audio_langs") or ["ja-JP"]),
@@ -431,6 +434,7 @@ class DownloadQueue:
             enable_hedging = bool(item.get("enable_hedging", opts.get("enable_hedging", False)))
             enable_resume = bool(item.get("enable_resume", opts.get("enable_resume", True)))
             bitrate_mode = str(item.get("bitrate_mode") or opts.get("bitrate_mode") or "highest")
+            season_title = str(item.get("season_title") or opts.get("season_title") or "").strip()
         else:
             ep_id = str(item).strip()
             title = ""
@@ -447,6 +451,7 @@ class DownloadQueue:
             enable_hedging = bool(opts.get("enable_hedging", False))
             enable_resume = bool(opts.get("enable_resume", True))
             bitrate_mode = str(opts.get("bitrate_mode") or "highest")
+            season_title = str(opts.get("season_title") or "").strip()
 
         if not ep_id:
             return None
@@ -478,6 +483,7 @@ class DownloadQueue:
                 bitrate_mode=bitrate_mode,
                 status="queued",
                 task_id=task_id or "",
+                season_title=season_title,
             )
             self.queue.append(job)
             self.all_items_map[job.id] = job
@@ -938,6 +944,10 @@ class DownloadQueue:
                                 job.episode_number = info.episode_metadata.episode_number
                             if not job.series_title and info.episode_metadata.series_title:
                                 job.series_title = info.episode_metadata.series_title
+                            if not job.season_title and getattr(info.episode_metadata, "season_title", ""):
+                                job.season_title = info.episode_metadata.season_title
+                            elif job.season_title and not getattr(info.episode_metadata, "season_title", ""):
+                                info.episode_metadata.season_title = job.season_title
                 except Exception as ex:
                     self.log(f"metadata fetch error for {job.ep_id}: {ex}")
                     raise RuntimeError(f"Could not load episode metadata for {job.ep_id}: {ex}") from ex

@@ -450,6 +450,7 @@ def get_episode_info(
         audio_locale=ep_meta_raw.get("audio_locale", ""),
         versions=versions,
         availability_starts=ep_meta_raw.get("availability_starts", ""),
+        season_title=ep_meta_raw.get("season_title", ""),
     )
 
     subs = {}
@@ -592,6 +593,7 @@ def get_season_episodes(
                 versions=versions,
                 availability_starts=ep_meta_raw.get("availability_starts", ""),
                 season_id=season_id,
+                season_title=ep_meta_raw.get("season_title", item.get("season_title", "")),
             )
         )
 

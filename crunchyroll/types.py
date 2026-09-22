@@ -22,6 +22,7 @@ class EpisodeMetadata:
     series_title: str
     availability_starts: str
     versions: List[DubVersion] = field(default_factory=list)
+    season_title: str = ""
 
 
 @dataclass
@@ -61,6 +62,7 @@ class SeasonEpisode:
     title: str
     availability_starts: str
     season_id: str = ""
+    season_title: str = ""
 
 
 @dataclass

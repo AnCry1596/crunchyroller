@@ -967,6 +967,7 @@ function renderEpisodeTree(data) {
       cb.dataset.epNum = ep.episode_number || '';
       cb.dataset.snNum = ep.season_number || '';
       cb.dataset.series = ep.series_title || '';
+      cb.dataset.seasonTitle = ep.season_title || season.title || '';
       cb.tabIndex = -1;
 
       const num = document.createElement('span');
@@ -1052,6 +1053,7 @@ async function startDl() {
     episode_number: parseInt(c.dataset.epNum) || 0,
     season_number: parseInt(c.dataset.snNum) || 0,
     series_title: c.dataset.series || '',
+    season_title: c.dataset.seasonTitle || '',
   }));
   if (!selected.length) {
     toast('pick some episodes first', 'err');

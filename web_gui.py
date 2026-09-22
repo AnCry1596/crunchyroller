@@ -716,9 +716,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 avail_audios = []
                 if kind == "episode":
                     info = get_episode_info(client, cid)
-                    seasons = [{"season_number": info.episode_metadata.season_number,
-                        "episodes": [{"id":cid,"title":info.title,"episode_number":info.episode_metadata.episode_number,
-                                      "season_number":info.episode_metadata.season_number,"series_title":info.episode_metadata.series_title}]}]
+                    seasons = [{
+                        "season_number": info.episode_metadata.season_number,
+                        "title": getattr(info.episode_metadata, "season_title", "") or f"Season {info.episode_metadata.season_number}",
+                        "episodes": [{
+                            "id": cid,
+                            "title": info.title,
+                            "episode_number": info.episode_metadata.episode_number,
+                            "season_number": info.episode_metadata.season_number,
+                            "series_title": info.episode_metadata.series_title,
+                            "season_title": getattr(info.episode_metadata, "season_title", ""),
+                        }],
+                    }]
                     title = info.episode_metadata.series_title
                     avail_audios = [v.audio_locale for v in info.episode_metadata.versions if v.audio_locale]
                 else:
@@ -752,6 +761,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                     "episode_number": e.episode_number,
                                     "season_number": e.season_number,
                                     "series_title": e.series_title,
+                                    "season_title": getattr(e, "season_title", "") or sn.title or "",
                                 }
                                 for e in eps
                             ],

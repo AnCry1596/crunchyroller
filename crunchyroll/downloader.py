@@ -54,7 +54,7 @@ from .types import (
     PlaybackStream,
     SeasonEpisode,
 )
-from .utils import locale_base, sanitize_filename, track_title
+from .utils import locale_base, resolve_season_folder, sanitize_filename, track_title
 
 MAX_WORKERS = 16
 MAX_RETRIES = 5
@@ -985,8 +985,12 @@ def download_episode(
                 "tracks": {},
             })
 
-    # Plex and Jellyfin standard layout: Series / Season XX / Series - SXXEYY - Title.mkv
-    season_folder = f"Season {season_num:02d}"
+    # Plex and Jellyfin standard layout: Series / Season (or Arc) / Series - SXXEYY - Title.mkv
+    season_folder = resolve_season_folder(
+        series_title=info.episode_metadata.series_title,
+        season_number=season_num,
+        season_title=getattr(info.episode_metadata, "season_title", ""),
+    )
     output_dir = os.path.join(base_dir, series_title, season_folder)
     os.makedirs(output_dir, exist_ok=True)
     filename = f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"
@@ -994,9 +998,11 @@ def download_episode(
 
     # Legacy file detection and seamless migration into Season subfolder
     legacy_candidates = [
+        os.path.join(base_dir, series_title, f"Season {season_num:02d}", filename),
         os.path.join(base_dir, series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(base_dir, series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(output_dir, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
+        os.path.join(".", series_title, f"Season {season_num:02d}", filename),
         os.path.join(".", series_title, season_folder, filename),
         os.path.join(".", series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(".", series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
@@ -1569,6 +1575,7 @@ def download_season(
                 audio_locale=ep.audio_locale,
                 versions=episode_versions,
                 availability_starts=ep.availability_starts,
+                season_title=getattr(ep, "season_title", ""),
             ),
             title=ep.title,
         )
@@ -1679,6 +1686,7 @@ def download_series(
                 audio_locale=ep.audio_locale,
                 versions=episode_versions,
                 availability_starts=ep.availability_starts,
+                season_title=getattr(ep, "season_title", ""),
             ),
             title=ep.title,
         )
@@ -1819,7 +1827,11 @@ def _download_episode_n_m3u8dl_re(
         download_dir = DEFAULT_DOWNLOAD_DIR
     base_dir = os.path.abspath(os.path.expanduser(download_dir.strip()))
 
-    season_folder = f"Season {season_num:02d}"
+    season_folder = resolve_season_folder(
+        series_title=info.episode_metadata.series_title,
+        season_number=season_num,
+        season_title=getattr(info.episode_metadata, "season_title", ""),
+    )
     output_dir = os.path.join(base_dir, series_title, season_folder)
     os.makedirs(output_dir, exist_ok=True)
     filename = f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"
@@ -1827,9 +1839,11 @@ def _download_episode_n_m3u8dl_re(
 
     # Legacy file detection and seamless migration into Season subfolder
     legacy_candidates = [
+        os.path.join(base_dir, series_title, f"Season {season_num:02d}", filename),
         os.path.join(base_dir, series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(base_dir, series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(output_dir, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
+        os.path.join(".", series_title, f"Season {season_num:02d}", filename),
         os.path.join(".", series_title, season_folder, filename),
         os.path.join(".", series_title, f"{series_title} S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
         os.path.join(".", series_title, f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title} [{video_quality}].mkv"),
