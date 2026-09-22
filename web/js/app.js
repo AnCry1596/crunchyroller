@@ -46,7 +46,7 @@ const AUDIO_OPTIONS = [
 
 const SUBS_OPTIONS = [
   { val: 'all', label: 'All available' },
-  { val: 'en-US', label: 'English' },
+  { val: 'en-US', label: 'English (+ CC)' },
   { val: 'es-419', label: 'Spanish (Latin America)' },
   { val: 'es-ES', label: 'Spanish (Spain)' },
   { val: 'pt-BR', label: 'Portuguese (Brazil)' },

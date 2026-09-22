@@ -939,7 +939,11 @@ class DownloadQueue:
                             if not job.series_title and info.episode_metadata.series_title:
                                 job.series_title = info.episode_metadata.series_title
                 except Exception as ex:
-                    self.log(f"metadata fetch warning for {job.ep_id}: {ex}")
+                    self.log(f"metadata fetch error for {job.ep_id}: {ex}")
+                    raise RuntimeError(f"Could not load episode metadata for {job.ep_id}: {ex}") from ex
+
+                if not info or not info.episode_metadata:
+                    raise RuntimeError(f"Could not load episode metadata for {job.ep_id}. Check login or session.")
 
                 # Ensure cancel_event is clean before starting download unless cancel was requested
                 # for THIS job or cancel_all

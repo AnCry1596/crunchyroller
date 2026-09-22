@@ -5,12 +5,28 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from .types import EpisodeInfo, MediaTrack
 from .utils import LANGUAGE_CODES, locale_base, track_title
 
 logger = logging.getLogger("crunchyroll.merger")
+
+
+def generate_ffmetadata(chapters: List[Dict[str, Any]]) -> str:
+    """Generates standard FFMETADATA1 chapter definitions for FFmpeg."""
+    lines = [";FFMETADATA1"]
+    for ch in chapters:
+        start_ms = int(round(float(ch["start"]) * 1000))
+        end_ms = int(round(float(ch["end"]) * 1000))
+        title = str(ch.get("name", "Chapter")).strip()
+        lines.append("[CHAPTER]")
+        lines.append("TIMEBASE=1/1000")
+        lines.append(f"START={start_ms}")
+        lines.append(f"END={end_ms}")
+        lines.append(f"title={title}")
+    return "\n".join(lines) + "\n"
+
 
 
 def find_ffmpeg() -> str:
@@ -46,6 +62,7 @@ def merge_everything(
     info: EpisodeInfo,
     video_quality: Optional[str] = None,
     duration_seconds: Optional[float] = None,
+    chapters: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """
     Muxes video, multi-audio dubs, and subtitle tracks into a single MKV container.
@@ -68,6 +85,21 @@ def merge_everything(
     for sub in sub_tracks:
         args.extend(["-i", sub.file])
 
+    chapters_file = None
+    chapters_input_idx = None
+    if chapters:
+        try:
+            chapters_content = generate_ffmetadata(chapters)
+            chapters_file = output_file + ".chapters.txt"
+            with open(chapters_file, "w", encoding="utf-8") as f:
+                f.write(chapters_content)
+            chapters_input_idx = 1 + len(audio_tracks) + len(sub_tracks)
+            args.extend(["-i", chapters_file])
+        except Exception as exc:
+            logger.warning("Failed to prepare chapters metadata: %s", exc)
+            chapters_file = None
+            chapters_input_idx = None
+
     # Map video track
     args.extend(["-map", "0:v:0"])
 
@@ -78,6 +110,10 @@ def merge_everything(
     # Map subtitle tracks
     for j in range(len(sub_tracks)):
         args.extend(["-map", f"{1 + len(audio_tracks) + j}"])
+
+    # Map chapters
+    if chapters_input_idx is not None:
+        args.extend(["-map_chapters", str(chapters_input_idx)])
 
     # Codec copying
     args.extend(["-c:v", "copy", "-c:a", "copy"])
@@ -174,31 +210,39 @@ def merge_everything(
         "-metadata:g", f"track={info.episode_metadata.episode_number}",
         "-metadata:g", f"season_number={info.episode_metadata.season_number}",
         "-metadata:g", f"episode_number={info.episode_metadata.episode_number}",
-        output_file,
     ])
 
+    args.append(output_file)
+
     try:
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=600,
-        )
-    except subprocess.TimeoutExpired as exc:
-        if os.path.exists(output_file):
+        try:
+            result = subprocess.run(
+                args,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=600,
+            )
+        except subprocess.TimeoutExpired as exc:
+            if os.path.exists(output_file):
+                try:
+                    os.remove(output_file)
+                except OSError:
+                    pass
+            raise RuntimeError("ffmpeg timed out after 10 minutes while muxing") from exc
+        if result.returncode != 0:
+            if os.path.exists(output_file):
+                try:
+                    os.remove(output_file)
+                except OSError:
+                    pass
+            raise RuntimeError(f"ffmpeg failed: {result.stderr}")
+    finally:
+        if chapters_file and os.path.exists(chapters_file):
             try:
-                os.remove(output_file)
+                os.remove(chapters_file)
             except OSError:
                 pass
-        raise RuntimeError("ffmpeg timed out after 10 minutes while muxing") from exc
-    if result.returncode != 0:
-        if os.path.exists(output_file):
-            try:
-                os.remove(output_file)
-            except OSError:
-                pass
-        raise RuntimeError(f"ffmpeg failed: {result.stderr}")
 
     # Clean up intermediate temporary files
     if os.path.exists(video_file):

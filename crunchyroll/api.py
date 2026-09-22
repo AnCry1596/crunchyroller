@@ -3,6 +3,7 @@ import time
 from typing import List, Optional, Tuple, Dict, Any
 from urllib.parse import quote, urlparse, urlunparse, urlencode, parse_qs
 
+import requests
 from .http_client import CrunchyrollHttpClient
 from .types import (
     DubVersion,
@@ -704,6 +705,10 @@ def purge_orphan_streams(
         "User-Agent": "Crunchyroll/ANDROIDTV/3.70.0_22358 (Android 12; en-US; SHIELD Android TV Build/SR1A.220624.014)",
     }
     raw_android_token = getattr(client, "android_token", None)
+    has_android = bool(raw_android_token or getattr(client, "android_refresh_token", None))
+    if isinstance(client, CrunchyrollHttpClient) and not has_android:
+        return 0
+
     token = raw_android_token or getattr(client, "token", None)
     if token:
         headers["Authorization"] = f"Bearer {str(token).strip()}"
@@ -711,13 +716,6 @@ def purge_orphan_streams(
     url = "https://cr-play-service.prd.crunchyrollsvc.com/v1/sessions/streaming"
     try:
         resp = client.do_request("GET", url, headers=headers)
-        if resp.status_code == 401:
-            client.refresh_token()
-            token = getattr(client, "android_token", None) or getattr(client, "token", None)
-            if token:
-                headers["Authorization"] = f"Bearer {str(token).strip()}"
-            resp = client.do_request("GET", url, headers=headers)
-
         if resp.status_code != 200:
             return 0
 
@@ -745,3 +743,96 @@ def purge_orphan_streams(
         print(f"[sessions] Warning: Failed to query/purge active sessions: {exc}", flush=True)
         return 0
 
+
+def get_episode_chapters(
+    content_id: str,
+    duration_seconds: Optional[float] = None,
+    client: Optional[CrunchyrollHttpClient] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Fetches official chapter/skip-event markers (Intro, Episode, Credits, Preview)
+    from Crunchyroll's public CDN API and constructs a continuous chapter timeline.
+    """
+    if not content_id:
+        return []
+
+    cid = str(content_id).strip()
+    if "/" in cid:
+        cid = cid.rstrip("/").split("/")[-1]
+
+    data = None
+    urls = [
+        f"https://static.crunchyroll.com/skip-events/production/{cid}.json",
+        f"https://static.crunchyroll.com/datalab-intro-v2/{cid}.json",
+    ]
+
+    session = getattr(client, "session", None) or requests
+
+    for url in urls:
+        try:
+            resp = session.get(url, timeout=5, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code == 200:
+                loaded = resp.json()
+                if isinstance(loaded, dict) and loaded:
+                    data = loaded
+                    break
+        except Exception:
+            continue
+
+    if not data:
+        return []
+
+    raw_events = []
+    # 1. New skip-events format (intro, credits, preview, recap)
+    for k in ["recap", "intro", "credits", "preview"]:
+        item = data.get(k)
+        if isinstance(item, dict) and "start" in item and "end" in item:
+            try:
+                s = float(item["start"])
+                e = float(item["end"])
+                if e > s >= 0:
+                    raw_events.append({"name": k.capitalize(), "start": s, "end": e})
+            except (ValueError, TypeError):
+                pass
+
+    # 2. Old datalab-intro-v2 format
+    if not raw_events and "startTime" in data and "endTime" in data:
+        try:
+            s = float(data["startTime"])
+            e = float(data["endTime"])
+            if e > s >= 0:
+                raw_events.append({"name": "Intro", "start": s, "end": e})
+        except (ValueError, TypeError):
+            pass
+
+    if not raw_events:
+        return []
+
+    raw_events.sort(key=lambda x: x["start"])
+
+    timeline = []
+    current_time = 0.0
+
+    for ev in raw_events:
+        # If there is a meaningful gap (> 2.0s) before this event
+        if ev["start"] > current_time + 2.0:
+            gap_name = "Prologue" if current_time < 1.0 and ev["name"] == "Intro" else "Episode"
+            timeline.append({"name": gap_name, "start": current_time, "end": ev["start"]})
+            current_time = ev["start"]
+        else:
+            # Tiny gap <= 2.0s, bridge it to prevent 1-second fragmented chapters
+            if timeline:
+                timeline[-1]["end"] = ev["start"]
+            current_time = ev["start"]
+
+        timeline.append({"name": ev["name"], "start": current_time, "end": ev["end"]})
+        current_time = ev["end"]
+
+    # Final segment to total duration
+    if duration_seconds and duration_seconds > current_time + 3.0:
+        last_name = "Preview" if timeline and timeline[-1]["name"] == "Credits" else "Episode"
+        timeline.append({"name": last_name, "start": current_time, "end": float(duration_seconds)})
+    elif duration_seconds and timeline:
+        timeline[-1]["end"] = max(timeline[-1]["end"], float(duration_seconds))
+
+    return timeline

@@ -20,6 +20,7 @@ import requests
 from .api import (
     delete_stream,
     get_episode,
+    get_episode_chapters,
     get_episode_download,
     get_episode_info,
     get_season_episodes,
@@ -1456,6 +1457,15 @@ def download_episode(
             "muxing",
         )
 
+        chapters = []
+        try:
+            dur = prepared.get("period_duration_seconds")
+            chapters = get_episode_chapters(base_content_id, duration_seconds=dur, client=client)
+            if chapters:
+                print(f"[chapters] Embedded {len(chapters)} chapter markers ({', '.join(c['name'] for c in chapters)})")
+        except Exception as exc:
+            logger.debug("Could not fetch chapter markers: %s", exc)
+
         temp_output_filename = output_filename + ".tmp.mkv"
         merge_everything(
             video_file=video_file,
@@ -1465,6 +1475,7 @@ def download_episode(
             info=info,
             video_quality=video_quality,
             duration_seconds=prepared.get("period_duration_seconds"),
+            chapters=chapters,
         )
 
         atomic_finalize(temp_output_filename, output_filename)
@@ -2144,6 +2155,14 @@ def _download_episode_n_m3u8dl_re(
         # ------------------------------------------------------------------
         _invoke_progress_cb(progress_cb, info.title, 1, 1, "", 0.0, "muxing")
 
+        chapters = []
+        try:
+            chapters = get_episode_chapters(base_content_id, client=client)
+            if chapters:
+                print(f"[chapters] Embedded {len(chapters)} chapter markers ({', '.join(c['name'] for c in chapters)})")
+        except Exception as exc:
+            logger.debug("Could not fetch chapter markers: %s", exc)
+
         print("Muxing tracks into MKV...")
         temp_output_filename = output_filename + ".tmp.mkv"
         merge_everything(
@@ -2153,6 +2172,7 @@ def _download_episode_n_m3u8dl_re(
             output_file=temp_output_filename,
             info=info,
             video_quality=video_quality,
+            chapters=chapters,
         )
 
         atomic_finalize(temp_output_filename, output_filename)

@@ -28,12 +28,14 @@ Downloads automatically default to a dedicated `anime/` directory, sorted into s
 
 ## Features
 
+- **Official Chapter Markers:** Automatically extracts Crunchyroll skip events (Prologue, Intro, Episode, Credits, Preview) and injects them into your MKV files for seamless chapter skipping in VLC, MPV, Plex, and Jellyfin.
 - **Download Queue & Batch Manager:** Queue up multiple episodes, full seasons, or series in the web GUI with live progress meters and a sliding queue drawer.
 - **Pause, Resume & Cancel:** Pause and resume active downloads with dynamic rolling speed calculation, or cancel individual episodes on the fly without interrupting the rest of your queue.
 - **Plex & Jellyfin Ready:** Automatically creates `Season XX` subfolders with standard scene naming (`Series - S01E01 - Title.mkv`), ensuring 100% instant metadata and poster matching in home media servers.
 - **Uncapped Download Speeds:** Downloads aren't throttled at all — it maxes out whatever your internet connection can handle (can reach 60–70+ MB/s on fast connections).
 - **Multiple Audio Dubs & Soft Subtitles:** Pick Japanese, English, or download all available dubs and subs in one go (with full English CC support) muxed cleanly into a single MKV.
-- **Clean Desktop GUI & CLI:** Run it as a sleek desktop app, in your web browser, or straight from the command line.
+- **Bitrate Mode Selector:** Toggle between Highest Quality (maximum bitrate 1080p source) and Data-Saver modes via GUI settings or config.
+- **Cross-Platform (Windows & Linux):** Run it as a sleek desktop app, in your web browser (`--browser`), or headless from the command line.
 - **Automated Widevine DRM Decryption:** Handles CENC decryption automatically once you provide your CDM keys (`.wvd` or `client_id.bin` + `private_key.pem`).
 - **Easy Login:** Sign in directly with your email/password, your web browser session, or by pasting an `etp_rt` cookie.
 - **Smart Session Pacing:** Automatic session cleanup and cooldown delays to prevent playback lockouts or rate limits.
@@ -47,6 +49,17 @@ Downloads automatically default to a dedicated `anime/` directory, sorted into s
 2. Extract the zip.
 3. Put your Widevine CDM files in the folder (see below).
 4. Run `crunchyroller.exe`.
+
+### Linux (Pre-built)
+1. Download the latest `crunchyroller-*-linux-x86_64.tar.gz` from [**Releases**](https://github.com/Vure-sh/crunchyroller/releases/latest).
+2. Extract the tarball:
+   ```bash
+   tar -xzf crunchyroller-*-linux-x86_64.tar.gz
+   cd crunchyroller
+   ```
+3. Put your Widevine CDM files in the folder.
+4. Run `./crunchyroller --browser` (or `--gui` if WebKitGTK is available).
+
 
 ### Running from Source
 Make sure you have **Python 3.10+** and [**FFmpeg**](https://ffmpeg.org/) installed.
@@ -175,8 +188,15 @@ Yes, it fetches the highest available stream quality (up to 1080p source) by def
 **Can I download multiple audio dubs and subtitles together?**  
 Yes. You can select specific dubs and subs (e.g. Japanese + English audio and English subtitles) or choose "all" to bundle everything into a single `.mkv` with proper language tags.
 
+**Does it add chapter markers (Intro, Outro, Credits)?**  
+Yes! Crunchyroller automatically retrieves official chapter markers from Crunchyroll's servers and injects them directly into the output `.mkv` container. Media players like MPV, VLC, Plex, and Jellyfin allow skipping directly past the prologue, intro, or credits with standard chapter hotkeys.
+
+**How do Closed Captions (CC) work?**  
+When English audio is selected or when downloading all subtitles, Crunchyroller preserves English Closed Captions (`[CC]`) alongside standard dialogue subtitles and properly marks the track with the hearing-impaired Matroska disposition.
+
 **Why do I need Widevine CDM keys?**  
 Crunchyroll streams are encrypted with Widevine DRM. Providing your own CDM files lets the app decrypt the video and audio streams directly on your machine.
+
 
 ---
 

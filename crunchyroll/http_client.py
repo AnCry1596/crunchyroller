@@ -74,7 +74,7 @@ class CrunchyrollHttpClient:
             self.refresh_android_token()
         elif self.etp_rt:
             try:
-                self.token = get_access_token(self.etp_rt)
+                self.token = get_access_token(self.etp_rt, force_refresh=True)
             except Exception as e:
                 print(f"[auth] Failed to refresh web token from etp_rt: {e}")
 

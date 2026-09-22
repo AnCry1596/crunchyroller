@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import uuid
 from typing import Dict, Any, Optional, Tuple
 import requests
@@ -41,13 +42,14 @@ def _find_fallback_config() -> Optional[str]:
     return None
 
 
-def save_config(config_dict: Dict[str, Any], config_path: str = CONFIG_FILE) -> None:
+def save_config(config_dict: Dict[str, Any], config_path: Optional[str] = None) -> None:
     """Safely and atomically update settings in config.json without losing existing keys."""
+    target_path = config_path or CONFIG_FILE
     with CONFIG_LOCK:
         existing: Dict[str, Any] = {}
-        if os.path.exists(config_path):
+        if os.path.exists(target_path):
             try:
-                with open(config_path, "r", encoding="utf-8") as f:
+                with open(target_path, "r", encoding="utf-8") as f:
                     content = f.read().strip()
                     if content:
                         loaded = json.loads(content)
@@ -55,11 +57,11 @@ def save_config(config_dict: Dict[str, Any], config_path: str = CONFIG_FILE) -> 
                             existing = loaded
             except Exception as e:
                 # If file exists but is unparseable, NEVER overwrite/truncate it with empty dict!
-                print(f"[config] Warning: Failed to parse existing {config_path} ({e}); backing up before rewrite.")
+                print(f"[config] Warning: Failed to parse existing {target_path} ({e}); backing up before rewrite.")
                 try:
                     import time
-                    bak_path = f"{config_path}.bak.{int(time.time())}"
-                    shutil.copy2(config_path, bak_path)
+                    bak_path = f"{target_path}.bak.{int(time.time())}"
+                    shutil.copy2(target_path, bak_path)
                 except Exception:
                     pass
 
@@ -69,26 +71,27 @@ def save_config(config_dict: Dict[str, Any], config_path: str = CONFIG_FILE) -> 
                 existing[k] = v
 
         # Atomic write via temporary file in the same directory + os.replace
-        dir_name = os.path.dirname(os.path.abspath(config_path)) or "."
-        base_name = os.path.basename(config_path)
+        dir_name = os.path.dirname(os.path.abspath(target_path)) or "."
+        base_name = os.path.basename(target_path)
         temp_path = os.path.join(dir_name, f".{base_name}.tmp.{os.getpid()}")
         try:
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(existing, f, indent=4)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(temp_path, config_path)
+            os.replace(temp_path, target_path)
         except Exception as e:
             if os.path.exists(temp_path):
                 try: os.remove(temp_path)
                 except Exception: pass
-            print(f"[config] Warning: Failed to save config to {config_path}: {e}")
+            print(f"[config] Warning: Failed to save config to {target_path}: {e}")
 
 
-def load_config(config_path: str = CONFIG_FILE) -> Dict[str, Any]:
+def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Load config from disk. If file does not exist, initialize it safely."""
+    target_path = config_path or CONFIG_FILE
     with CONFIG_LOCK:
-        if not os.path.exists(config_path):
+        if not os.path.exists(target_path):
             # Check for existing fallback config to inherit
             fallback = _find_fallback_config()
             if fallback and os.path.isfile(fallback):
@@ -96,19 +99,19 @@ def load_config(config_path: str = CONFIG_FILE) -> Dict[str, Any]:
                     with open(fallback, "r", encoding="utf-8") as f:
                         inherited = json.load(f)
                     if isinstance(inherited, dict) and inherited:
-                        save_config(inherited, config_path)
+                        save_config(inherited, target_path)
                         return dict(inherited)
                 except Exception:
                     pass
 
             try:
-                save_config(DEFAULT_CONFIG, config_path)
+                save_config(DEFAULT_CONFIG, target_path)
                 return dict(DEFAULT_CONFIG)
             except Exception:
                 return dict(DEFAULT_CONFIG)
 
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(target_path, "r", encoding="utf-8") as f:
                 content = f.read().strip()
                 if not content:
                     return dict(DEFAULT_CONFIG)
@@ -117,18 +120,19 @@ def load_config(config_path: str = CONFIG_FILE) -> Dict[str, Any]:
                     return data
                 return dict(DEFAULT_CONFIG)
         except Exception as e:
-            print(f"[config] Warning: Error reading {config_path}: {e}")
+            print(f"[config] Warning: Error reading {target_path}: {e}")
             return dict(DEFAULT_CONFIG)
 
 
-def get_device_id(config_path: str = CONFIG_FILE) -> str:
+def get_device_id(config_path: Optional[str] = None) -> str:
     """Retrieve the persistent device ID from config or generate and save a new one."""
-    cfg = load_config(config_path)
+    target_path = config_path or CONFIG_FILE
+    cfg = load_config(target_path)
     dev_id = cfg.get("device_id")
     if dev_id and isinstance(dev_id, str) and dev_id.strip():
         return dev_id.strip()
     new_id = str(uuid.uuid4())
-    save_config({"device_id": new_id}, config_path)
+    save_config({"device_id": new_id}, target_path)
     return new_id
 
 
@@ -141,9 +145,19 @@ def _get_device_id_val() -> str:
 
 _DEVICE_ID = _get_device_id_val()
 
+_TOKEN_CACHE: Dict[str, Tuple[str, float]] = {}
+_TOKEN_CACHE_LOCK = threading.Lock()
 
-def get_access_token(etp_rt: str) -> str:
-    """swap our session cookie for a bearer token"""
+
+def get_access_token(etp_rt: str, force_refresh: bool = False) -> str:
+    """swap our session cookie for a bearer token, reusing cached token if valid"""
+    now = time.time()
+    with _TOKEN_CACHE_LOCK:
+        if not force_refresh and etp_rt in _TOKEN_CACHE:
+            cached_token, expire_at = _TOKEN_CACHE[etp_rt]
+            if now < expire_at:
+                return cached_token
+
     dev_id = get_device_id()
     url = "https://www.crunchyroll.com/auth/v1/token"
     headers = {
@@ -168,7 +182,11 @@ def get_access_token(etp_rt: str) -> str:
         )
 
     json_resp = response.json()
-    return json_resp.get("access_token", "")
+    token = json_resp.get("access_token", "")
+    expires_in = int(json_resp.get("expires_in", 300))
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE[etp_rt] = (token, now + max(10, expires_in - 30))
+    return token
 ANDROID_BASIC_AUTH = "Basic ZXZ4YzVybGN1bnd4cm91YWpmeHI6NkJGWGM1SUk3UWx2Z3NFbzdiVjBuWUNfN1VRLXVlSVM="
 ANDROID_CLIENT_ID = "evxc5rlcunwxrouajfxr"
 ANDROID_CLIENT_SECRET = "6BFXc5II7QlvgsEo7bV0nYC_7UQ-ueIS"
