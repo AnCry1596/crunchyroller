@@ -50,18 +50,7 @@ Downloads automatically default to a dedicated `anime/` directory, sorted into s
 3. Put your Widevine CDM files in the folder (see below).
 4. Run `crunchyroller.exe`.
 
-### Linux (Pre-built)
-1. Download the latest `crunchyroller-*-linux-x86_64.tar.gz` from [**Releases**](https://github.com/Vure-sh/crunchyroller/releases/latest).
-2. Extract the tarball:
-   ```bash
-   tar -xzf crunchyroller-*-linux-x86_64.tar.gz
-   cd crunchyroller
-   ```
-3. Put your Widevine CDM files in the folder.
-4. Run `./crunchyroller --browser` (or `--gui` if WebKitGTK is available).
-
-
-### Running from Source
+### Running from Source (Linux, macOS, Windows)
 Make sure you have **Python 3.10+** and [**FFmpeg**](https://ffmpeg.org/) installed.
 
 ```bash
