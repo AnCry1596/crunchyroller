@@ -4,7 +4,6 @@ import json
 import os
 import queue
 import shutil
-import subprocess
 import random
 import sys
 import tempfile
@@ -664,9 +663,10 @@ def _try_fallback_subtitles(
         if v.guid and v.guid != exclude_id
     ]
     target_clean = locale.strip().lower()
-    # Prioritize candidate versions matching requested locale (e.g. en-US dub for English subtitles)
+    base_target = locale_base(target_clean).lower()
+    # Prioritize candidate versions matching requested locale or base locale (e.g. en-US dub for English subtitles/CC)
     candidate_versions.sort(
-        key=lambda v: 0 if (getattr(v, "audio_locale", "") or "").lower() == target_clean else 1
+        key=lambda v: 0 if (getattr(v, "audio_locale", "") or "").lower() in {target_clean, base_target} else 1
     )
 
     for version in candidate_versions:
@@ -676,7 +676,8 @@ def _try_fallback_subtitles(
             # 1. Check v_ep.subtitles
             target_url = None
             for s_loc, s_obj in v_ep.subtitles.items():
-                if s_loc.strip().lower() == target_clean and getattr(s_obj, "url", None):
+                s_clean = s_loc.strip().lower()
+                if (s_clean == target_clean or (not target_clean.endswith("-cc") and s_clean == base_target)) and getattr(s_obj, "url", None):
                     target_url = s_obj.url
                     break
             if target_url:
@@ -693,7 +694,7 @@ def _try_fallback_subtitles(
                     manifest_subs = get_manifest_subtitles(manifest)
                     for m_loc, m_url in manifest_subs.items():
                         m_clean = m_loc.strip().lower()
-                        if m_clean == target_clean or (target_clean.startswith("en") and m_clean.startswith("en")):
+                        if m_clean == target_clean or m_clean == base_target or (base_target.startswith("en") and m_clean.startswith("en")):
                             res = download_subs(m_url, pool=pool)
                             if res:
                                 return res
@@ -1072,22 +1073,63 @@ def download_episode(
         playback_cache[first_playback_id] = first_episode
         active_streams[first_playback_id] = first_episode.token
 
+        # Pre-fetch candidate streams for other requested audio versions (e.g. ja-JP + en-US)
+        # so that CC tracks and dub-specific subtitles are merged before subtitle selection.
+        if len(versions) > 1:
+            for v in versions[1:]:
+                if v.guid and v.guid not in playback_cache:
+                    try:
+                        v_ep = get_episode(
+                            client,
+                            v.guid,
+                            debug=debug,
+                            playback_id=v.guid,
+                            queue=1,
+                        )
+                        playback_cache[v.guid] = v_ep
+                        active_streams[v.guid] = v_ep.token
+                        for loc_k, s_obj in v_ep.subtitles.items():
+                            first_episode.subtitles.setdefault(loc_k, s_obj)
+                    except Exception as exc:
+                        logger.debug("Notice: Could not pre-fetch stream for %s: %s", getattr(v, "audio_locale", ""), exc)
+
         subtitle_map = _locale_map(first_episode.subtitles)
         primary_locale = (getattr(versions[0], "audio_locale", "") or "").lower()
         has_primary_subs = (primary_locale == "ja-jp" and len(first_episode.subtitles) > 0)
+
+        # Check for any missing CC tracks from matching dub versions
+        missing_cc_bases = set()
+        if not subs_all:
+            for loc in subs_langs:
+                base = locale_base(loc).lower()
+                cc_key = f"{base}-cc"
+                if cc_key not in subtitle_map:
+                    if any(locale_base(getattr(v, "audio_locale", "") or "").lower() == base for v in info.episode_metadata.versions if v.guid != first_playback_id):
+                        missing_cc_bases.add(base)
+
         if subs_all:
             needs_more_subs = not has_primary_subs and len(first_episode.subtitles) == 0
         else:
-            needs_more_subs = any(loc.lower() not in subtitle_map for loc in subs_langs)
+            needs_more_subs = (
+                any(loc.lower() not in subtitle_map for loc in subs_langs)
+                or bool(missing_cc_bases)
+            )
 
         if needs_more_subs:
             print("Fetching subtitles from versions...")
             candidate_versions = [
                 v for v in info.episode_metadata.versions
-                if v.guid and v.guid != first_playback_id
+                if v.guid and v.guid != first_playback_id and v.guid not in playback_cache
             ]
-            # Prioritize ja-JP because Crunchyroll attaches all soft subtitle tracks to the Japanese version.
-            candidate_versions.sort(key=lambda v: 0 if (getattr(v, "audio_locale", "") or "").lower() == "ja-jp" else 1)
+            def _version_priority(v):
+                v_base = locale_base(getattr(v, "audio_locale", "") or "").lower()
+                if v_base in missing_cc_bases:
+                    return 0
+                if (getattr(v, "audio_locale", "") or "").lower() == "ja-jp":
+                    return 1
+                return 2
+
+            candidate_versions.sort(key=_version_priority)
             selected_audio_guids = {v.guid for v in versions if v.guid}
 
             for v_idx, version in enumerate(candidate_versions):
@@ -1112,13 +1154,16 @@ def download_episode(
                 for locale, subtitle in v_ep.subtitles.items():
                     first_episode.subtitles.setdefault(locale, subtitle)
                 subtitle_map = _locale_map(first_episode.subtitles)
-                if not subs_all and all(loc.lower() in subtitle_map for loc in subs_langs):
-                    break
+                if not subs_all:
+                    all_found = all(loc.lower() in subtitle_map for loc in subs_langs)
+                    all_cc_found = all(f"{b}-cc" in subtitle_map for b in missing_cc_bases)
+                    if all_found and all_cc_found:
+                        break
                 # ja-JP provides the complete master subtitle catalog
-                if (getattr(version, "audio_locale", "") or "").lower() == "ja-jp" and v_ep.subtitles:
+                if (getattr(version, "audio_locale", "") or "").lower() == "ja-jp" and v_ep.subtitles and not missing_cc_bases:
                     break
-                # Never query more than 2 candidate versions for subtitles
-                if v_idx >= 1 and first_episode.subtitles:
+                # Never query more than 3 candidate versions for subtitles
+                if v_idx >= 2 and first_episode.subtitles:
                     break
 
             if not first_episode.subtitles:
@@ -1901,24 +1946,63 @@ def _download_episode_n_m3u8dl_re(
         # ------------------------------------------------------------------
         # 4. Subtitle discovery
         # ------------------------------------------------------------------
+        # Pre-fetch candidate streams for other requested audio versions (e.g. ja-JP + en-US)
+        # so that CC tracks and dub-specific subtitles are merged before subtitle selection.
+        if len(versions) > 1:
+            for v in versions[1:]:
+                if v.guid and v.guid not in playback_cache:
+                    try:
+                        v_ep = get_episode(
+                            client,
+                            v.guid,
+                            debug=debug,
+                            playback_id=v.guid,
+                            queue=1,
+                        )
+                        playback_cache[v.guid] = v_ep
+                        active_streams[v.guid] = v_ep.token
+                        for loc_k, s_obj in v_ep.subtitles.items():
+                            first_episode.subtitles.setdefault(loc_k, s_obj)
+                    except Exception as exc:
+                        logger.debug("Notice: Could not pre-fetch stream for %s: %s", getattr(v, "audio_locale", ""), exc)
+
         subtitle_map = _locale_map(first_episode.subtitles)
         primary_locale = (getattr(versions[0], "audio_locale", "") or "").lower()
         has_primary_subs = primary_locale == "ja-jp" and len(first_episode.subtitles) > 0
 
+        # Check for any missing CC tracks from matching dub versions
+        missing_cc_bases = set()
+        if not subs_all:
+            for loc in subs_langs:
+                base = locale_base(loc).lower()
+                cc_key = f"{base}-cc"
+                if cc_key not in subtitle_map:
+                    if any(locale_base(getattr(v, "audio_locale", "") or "").lower() == base for v in info.episode_metadata.versions if v.guid != first_playback_id):
+                        missing_cc_bases.add(base)
+
         if subs_all:
             needs_more_subs = not has_primary_subs and len(first_episode.subtitles) == 0
         else:
-            needs_more_subs = any(loc.lower() not in subtitle_map for loc in subs_langs)
+            needs_more_subs = (
+                any(loc.lower() not in subtitle_map for loc in subs_langs)
+                or bool(missing_cc_bases)
+            )
 
         if needs_more_subs:
             print("Fetching subtitles from versions...")
             candidate_versions = [
                 v for v in info.episode_metadata.versions
-                if v.guid and v.guid != first_playback_id
+                if v.guid and v.guid != first_playback_id and v.guid not in playback_cache
             ]
-            candidate_versions.sort(
-                key=lambda v: 0 if (getattr(v, "audio_locale", "") or "").lower() == "ja-jp" else 1
-            )
+            def _version_priority(v):
+                v_base = locale_base(getattr(v, "audio_locale", "") or "").lower()
+                if v_base in missing_cc_bases:
+                    return 0
+                if (getattr(v, "audio_locale", "") or "").lower() == "ja-jp":
+                    return 1
+                return 2
+
+            candidate_versions.sort(key=_version_priority)
             selected_audio_guids = {v.guid for v in versions if v.guid}
 
             for v_idx, version in enumerate(candidate_versions):
@@ -1943,11 +2027,14 @@ def _download_episode_n_m3u8dl_re(
                     first_episode.subtitles.setdefault(locale, subtitle)
 
                 subtitle_map = _locale_map(first_episode.subtitles)
-                if not subs_all and all(loc.lower() in subtitle_map for loc in subs_langs):
+                if not subs_all:
+                    all_found = all(loc.lower() in subtitle_map for loc in subs_langs)
+                    all_cc_found = all(f"{b}-cc" in subtitle_map for b in missing_cc_bases)
+                    if all_found and all_cc_found:
+                        break
+                if (getattr(version, "audio_locale", "") or "").lower() == "ja-jp" and v_ep.subtitles and not missing_cc_bases:
                     break
-                if (getattr(version, "audio_locale", "") or "").lower() == "ja-jp" and v_ep.subtitles:
-                    break
-                if v_idx >= 1 and first_episode.subtitles:
+                if v_idx >= 2 and first_episode.subtitles:
                     break
 
             if not first_episode.subtitles:

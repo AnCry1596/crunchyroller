@@ -1,4 +1,15 @@
 import re
+import subprocess
+import sys
+
+
+def get_subprocess_kwargs() -> dict:
+    """Return platform-specific kwargs for subprocess to prevent console window popup on Windows."""
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return kwargs
+
 
 LANGUAGE_NAMES = {
     "ja-JP": "日本語",

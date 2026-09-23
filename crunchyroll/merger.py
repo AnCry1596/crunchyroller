@@ -8,7 +8,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from .types import EpisodeInfo, MediaTrack
-from .utils import LANGUAGE_CODES, locale_base, track_title
+from .utils import LANGUAGE_CODES, get_subprocess_kwargs, locale_base, track_title
 
 logger = logging.getLogger("crunchyroll.merger")
 
@@ -222,6 +222,7 @@ def merge_everything(
                 text=True,
                 stdin=subprocess.DEVNULL,
                 timeout=600,
+                **get_subprocess_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
             if os.path.exists(output_file):

@@ -20,6 +20,7 @@ from Crypto.Cipher import AES
 from Crypto.Util import Counter
 
 from .merger import find_ffmpeg
+from .utils import get_subprocess_kwargs
 
 logger = logging.getLogger("crunchyroll.decryptor")
 
@@ -115,6 +116,7 @@ def _decrypt_with_ffmpeg(input_file: str, key_hex: str, output_file: str) -> boo
             errors="replace",
             stdin=subprocess.DEVNULL,
             timeout=300,
+            **get_subprocess_kwargs(),
         )
         if res.returncode == 0 and os.path.exists(output_file) and os.path.getsize(output_file) > 0:
             return True

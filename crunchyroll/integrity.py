@@ -8,6 +8,8 @@ import subprocess
 import sys
 from typing import Any, Dict, Optional, Tuple
 
+from .utils import get_subprocess_kwargs
+
 logger = logging.getLogger("crunchyroll.integrity")
 
 
@@ -77,6 +79,7 @@ class StreamValidator:
                 errors="replace",
                 stdin=subprocess.DEVNULL,
                 timeout=60,
+                **get_subprocess_kwargs(),
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"ffprobe execution timed out probing: {file_path}") from exc

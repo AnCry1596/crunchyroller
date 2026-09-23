@@ -7,6 +7,8 @@ import sys
 import logging
 from typing import Dict, List, Optional
 
+from .utils import get_subprocess_kwargs
+
 logger = logging.getLogger("crunchyroll.tools")
 
 
@@ -161,7 +163,9 @@ def run_n_m3u8dl_re(
     print(f"[n_m3u8dl-re] Downloading: {base_name}", flush=True)
 
     try:
-        result = subprocess.run(cmd, cwd=output_dir, stdin=subprocess.DEVNULL, timeout=1800)
+        result = subprocess.run(
+            cmd, cwd=output_dir, stdin=subprocess.DEVNULL, timeout=1800, **get_subprocess_kwargs()
+        )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"N_m3u8DL-RE timed out after 30 minutes for '{base_name}'") from exc
 
@@ -175,7 +179,13 @@ def run_n_m3u8dl_re(
             elif arg == "--select-audio" and idx + 1 < len(fallback_cmd):
                 fallback_cmd[idx + 1] = "for=best"
         try:
-            result = subprocess.run(fallback_cmd, cwd=output_dir, stdin=subprocess.DEVNULL, timeout=1800)
+            result = subprocess.run(
+                fallback_cmd,
+                cwd=output_dir,
+                stdin=subprocess.DEVNULL,
+                timeout=1800,
+                **get_subprocess_kwargs(),
+            )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"N_m3u8DL-RE fallback timed out after 30 minutes for '{base_name}'") from exc
 
