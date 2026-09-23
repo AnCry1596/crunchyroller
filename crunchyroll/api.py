@@ -212,7 +212,7 @@ def get_episode(
         response = client.do_request("GET", android_url, headers=android_headers)
         if _is_stream_limit_response(response):
             print("[playback] Stream limit detected (3002) during Android TV request; auto-purging orphaned sessions...", flush=True)
-            purge_orphan_streams(client)
+            purge_orphan_streams(client, all_devices=True)
             time.sleep(1.0)
             response = client.do_request("GET", android_url, headers=android_headers)
         response.raise_for_status()
@@ -244,7 +244,7 @@ def get_episode(
         response = client.do_request("GET", web_url)
         if _is_stream_limit_response(response):
             print("[playback] Stream limit detected (3002) during web playback request; auto-purging orphaned sessions...", flush=True)
-            purge_orphan_streams(client)
+            purge_orphan_streams(client, all_devices=True)
             time.sleep(1.0)
             response = client.do_request("GET", web_url)
     except Exception as exc:
@@ -707,13 +707,11 @@ def purge_orphan_streams(
         "User-Agent": "Crunchyroll/ANDROIDTV/3.70.0_22358 (Android 12; en-US; SHIELD Android TV Build/SR1A.220624.014)",
     }
     raw_android_token = getattr(client, "android_token", None)
-    has_android = bool(raw_android_token or getattr(client, "android_refresh_token", None))
-    if isinstance(client, CrunchyrollHttpClient) and not has_android:
+    token = raw_android_token or getattr(client, "token", None)
+    if not token:
         return 0
 
-    token = raw_android_token or getattr(client, "token", None)
-    if token:
-        headers["Authorization"] = f"Bearer {str(token).strip()}"
+    headers["Authorization"] = f"Bearer {str(token).strip()}"
 
     url = "https://cr-play-service.prd.crunchyrollsvc.com/v1/sessions/streaming"
     try:

@@ -907,7 +907,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/sessions/purge":
             try:
                 client = CrunchyrollHttpClient()
-                purged = purge_orphan_streams(client)
+                purged = purge_orphan_streams(client, all_devices=True)
                 _log(f"purged {purged} zombie session(s)")
                 self._json({"success": True, "purged": purged})
             except Exception as e:

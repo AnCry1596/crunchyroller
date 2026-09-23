@@ -889,7 +889,7 @@ class DownloadQueue:
                 purge_client = None
                 try:
                     purge_client = self.client_factory()
-                    purge_orphan_streams(purge_client)
+                    purge_orphan_streams(purge_client, all_devices=True)
                 except Exception as ex:
                     self.log(f"session preflight: {ex}")
                 finally:
