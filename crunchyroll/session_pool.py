@@ -87,7 +87,7 @@ class ConcurrencyConfig:
     max_retries: int = 5
     backoff_factor: float = 0.5
     pool_size: int = 32
-    timeout: int = 12
+    timeout: int = 30
     chunk_size: int = 524288  # 512 KB read buffer
 
 
@@ -340,7 +340,7 @@ class SessionPool:
 
         RateLimitGate.wait_if_blocked()
         read_timeout = float(timeout) if timeout else float(self.timeout)
-        t_out = (4.0, read_timeout)
+        t_out = (min(10.0, read_timeout), read_timeout)
         req_headers = dict(self.DEFAULT_HEADERS)
         if headers:
             req_headers.update(headers)
@@ -451,7 +451,7 @@ class SessionPool:
     ) -> Generator[bytes, None, None]:
         """Stream a media segment chunk by chunk."""
         read_timeout = float(timeout) if timeout else float(self.timeout)
-        t_out = (4.0, read_timeout)
+        t_out = (min(10.0, read_timeout), read_timeout)
         c_size = chunk_size or self.config.chunk_size
         req_headers = dict(self.DEFAULT_HEADERS)
         if headers:
