@@ -11,9 +11,16 @@ if os.path.exists(os.path.join(base_dir, 'ffmpeg')):
     datas.append((os.path.join(base_dir, 'ffmpeg'), '.'))
 
 binaries = []
-hiddenimports = ['Crypto', 'pywidevine', 'pymp4', 'curl_cffi', 'webview', 'web_gui', 'tkinter', 'tkinter.filedialog', 'xmltodict', 'sqlite3']
-tmp_ret = collect_all('crunchyroll')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+hiddenimports = ['Crypto', 'pywidevine', 'pymp4', 'curl_cffi', 'web_gui', 'tkinter', 'tkinter.filedialog', 'xmltodict', 'sqlite3']
+
+for pkg in ('crunchyroll', 'webview', 'pythonnet', 'clr'):
+    try:
+        tmp_ret = collect_all(pkg)
+        datas += tmp_ret[0]
+        binaries += tmp_ret[1]
+        hiddenimports += tmp_ret[2]
+    except Exception:
+        pass
 
 
 a = Analysis(

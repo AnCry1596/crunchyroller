@@ -18,7 +18,7 @@ if errorlevel 1 (
 :: 2. Check/Install dependencies and PyInstaller
 echo [1/4] Installing / updating build requirements...
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt pyinstaller
+python -m pip install -r requirements.txt pyinstaller pythonnet
 if errorlevel 1 (
     echo [ERROR] Failed to install dependencies.
     pause
